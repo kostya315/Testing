@@ -27,7 +27,10 @@ def load_config():
                 f.write("CROSS_FADE_ENABLED=True\n")
                 f.write("CROSS_FADE_DURATION_MS=200\n")
                 f.write("BOUNCING_ENABLED=True\n")
-                f.write("RESET_ANIMATION_ON_STATUS_CHANGE=True\n")  # НОВОЕ ПОЛЕ
+                f.write("RESET_ANIMATION_ON_STATUS_CHANGE=True\n")
+                f.write("INSTANT_TALK_TRANSITION=True\n")
+                f.write("DIM_ENABLED=True\n")  # НОВОЕ ПОЛЕ: Затемнение включено
+                f.write("DIM_PERCENTAGE=50\n")  # НОВОЕ ПОЛЕ: Процент затемнения
             print(f"Файл '{user_config_file_path}' успешно создан.")
         except Exception as e:
             print(f"Критическая ошибка при создании файла '{user_config_file_path}': {e}")
@@ -66,11 +69,29 @@ def load_config():
                 f.write("\nBOUNCING_ENABLED=True\n")
             print("Добавлена настройка 'BOUNCING_ENABLED=True' в config.txt")
 
-        if 'RESET_ANIMATION_ON_STATUS_CHANGE' not in config_data:  # НОВАЯ ПРОВЕРКА
+        if 'RESET_ANIMATION_ON_STATUS_CHANGE' not in config_data:
             config_data['RESET_ANIMATION_ON_STATUS_CHANGE'] = 'True'
             with open(user_config_file_path, 'a', encoding='utf-8') as f:
                 f.write("\nRESET_ANIMATION_ON_STATUS_CHANGE=True\n")
             print("Добавлена настройка 'RESET_ANIMATION_ON_STATUS_CHANGE=True' в config.txt")
+
+        if 'INSTANT_TALK_TRANSITION' not in config_data:
+            config_data['INSTANT_TALK_TRANSITION'] = 'True'
+            with open(user_config_file_path, 'a', encoding='utf-8') as f:
+                f.write("\nINSTANT_TALK_TRANSITION=True\n")
+            print("Добавлена настройка 'INSTANT_TALK_TRANSITION=True' в config.txt")
+
+        if 'DIM_ENABLED' not in config_data:  # НОВАЯ ПРОВЕРКА
+            config_data['DIM_ENABLED'] = 'True'
+            with open(user_config_file_path, 'a', encoding='utf-8') as f:
+                f.write("\nDIM_ENABLED=True\n")
+            print("Добавлена настройка 'DIM_ENABLED=True' в config.txt")
+
+        if 'DIM_PERCENTAGE' not in config_data:  # НОВАЯ ПРОВЕРКА
+            config_data['DIM_PERCENTAGE'] = '50'
+            with open(user_config_file_path, 'a', encoding='utf-8') as f:
+                f.write("\nDIM_PERCENTAGE=50\n")
+            print("Добавлена настройка 'DIM_PERCENTAGE=50' в config.txt")
 
 
     except Exception as e:
@@ -139,7 +160,8 @@ def save_config(config_data):
     # Разделение данных по файлам
     for key, value in config_data.items():
         if key in ['CAM_FPS', 'CROSS_FADE_ENABLED', 'BOUNCING_ENABLED', 'CROSS_FADE_DURATION_MS',
-                   'RESET_ANIMATION_ON_STATUS_CHANGE']:  # Добавлено новое поле
+                   'RESET_ANIMATION_ON_STATUS_CHANGE', 'INSTANT_TALK_TRANSITION', 'DIM_ENABLED',
+                   'DIM_PERCENTAGE']:  # Добавлены новые поля
             user_data_to_save[key] = value
         else:  # Все остальные настройки идут в app_config
             app_data_to_save[key] = value

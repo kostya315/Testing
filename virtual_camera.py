@@ -81,6 +81,13 @@ CROSS_FADE_DURATION_MS = _initial_cross_fade_duration_default  # Длитель�
 # Новая глобальная переменная для управления сбросом анимации
 _reset_animation_on_status_change = True  # По умолчанию сбрасывать
 
+# Новая глобальная переменная для мгновенного перехода в статус "Говорит"
+_instant_talk_transition = True  # По умолчанию мгновенный переход в статус "Говорит"
+
+# Новые глобальные переменные для затемнения
+_dim_enabled = True  # По умолчанию затемнение включено
+DIM_PERCENTAGE = 50  # По умолчанию затемнение на 50%
+
 # Добавляем переменную для отслеживания последнего известного статуса голоса
 _last_known_voice_status = None
 
@@ -163,7 +170,8 @@ def initialize_virtual_camera():
     global virtual_cam_obj, CAM_WIDTH, CAM_HEIGHT, CAM_FPS
     global _background_frames_list, _original_background_fps, _avatar_frames_map, _current_active_avatar_frames, _avatar_frames_lock
     global _bouncing_enabled, _current_background_frame_float_index
-    global _cross_fade_enabled, CROSS_FADE_DURATION_MS, _reset_animation_on_status_change
+    global _cross_fade_enabled, CROSS_FADE_DURATION_MS, _reset_animation_on_status_change, _instant_talk_transition
+    global _dim_enabled, DIM_PERCENTAGE  # Инициализация новых глобальных переменных
 
     if virtual_cam_obj is not None and virtual_cam_obj is not False:
         print("Виртуальная камера уже инициализирована.")
@@ -171,12 +179,25 @@ def initialize_virtual_camera():
 
     print("\n--- Предварительная загрузка изображений и анимаций ---")
 
-    # --- Загрузка конфигурации для BOUNCING_ENABLED, CAM_FPS, CROSS_FADE_ENABLED, CROSS_FADE_DURATION_MS, RESET_ANIMATION_ON_STATUS_CHANGE ---
+    # --- Загрузка конфигурации для BOUNCING_ENABLED, CAM_FPS, CROSS_FADE_ENABLED, CROSS_FADE_DURATION_MS, RESET_ANIMATION_ON_STATUS_CHANGE, INSTANT_TALK_TRANSITION, DIM_ENABLED, DIM_PERCENTAGE ---
     config = config_manager.load_config()
     _bouncing_enabled = config.get('BOUNCING_ENABLED', 'True').lower() == 'true'
     _cross_fade_enabled = config.get('CROSS_FADE_ENABLED', 'True').lower() == 'true'
-    _reset_animation_on_status_change = config.get('RESET_ANIMATION_ON_STATUS_CHANGE',
-                                                   'True').lower() == 'true'  # Считываем новую настройку
+    _reset_animation_on_status_change = config.get('RESET_ANIMATION_ON_STATUS_CHANGE', 'True').lower() == 'true'
+    _instant_talk_transition = config.get('INSTANT_TALK_TRANSITION', 'True').lower() == 'true'
+    _dim_enabled = config.get('DIM_ENABLED', 'True').lower() == 'true'  # Считываем новую настройку
+
+    try:  # Считываем DIM_PERCENTAGE из конфига
+        dim_percentage_from_config = int(config.get('DIM_PERCENTAGE', '50'))
+        if not (0 <= dim_percentage_from_config <= 100):  # Проверка на корректность процента
+            print(
+                f"ПРЕДУПРЕЖДЕНИЕ: Недопустимое значение DIM_PERCENTAGE в конфиге: {dim_percentage_from_config}. Использован стандартный процент: 50.")
+            DIM_PERCENTAGE = 50
+        else:
+            DIM_PERCENTAGE = dim_percentage_from_config
+    except ValueError:
+        print(f"ПРЕДУПРЕЖДЕНИЕ: Некорректный формат DIM_PERCENTAGE в конфиге. Использован стандартный процент: 50.")
+        DIM_PERCENTAGE = 50
 
     # Считываем CAM_FPS из конфига, если есть, иначе используем значение по умолчанию
     try:
@@ -382,6 +403,7 @@ async def start_frame_sending_loop():
     global _cam_loop_running, display_queue, virtual_cam_obj, _current_active_avatar_frames, _avatar_frames_map, _avatar_frames_lock
     global _bouncing_enabled, BOUNCING_MAX_OFFSET_PIXELS, _bouncing_active, _bouncing_start_time, _original_background_fps, CAM_FPS
     global _cross_fade_active, _cross_fade_start_time, _old_avatar_frames_data, _cross_fade_enabled, CROSS_FADE_DURATION_MS
+    global _dim_enabled, DIM_PERCENTAGE  # Добавлены новые глобальные переменные
 
     _cam_loop_running = True
 
@@ -485,6 +507,13 @@ async def start_frame_sending_loop():
                 else:
                     final_avatar_image_rgba = current_avatar_rgba
 
+            # --- Применение затемнения ---
+            # Применяем затемнение, если оно включено и статус не "Говорит"
+            if _dim_enabled and _last_known_voice_status != "Говорит" and final_avatar_image_rgba is not None:
+                dim_factor = 1.0 - (DIM_PERCENTAGE / 100.0)
+                # Применяем затемнение только к RGB каналам, альфа-канал оставляем неизменным
+                final_avatar_image_rgba[:, :, :3] = (final_avatar_image_rgba[:, :, :3] * dim_factor).astype(np.uint8)
+
             composed_frame_rgb = _compose_frame(background_frame_to_composite, final_avatar_image_rgba,
                                                 y_offset_addition=current_bounce_offset)
 
@@ -526,7 +555,7 @@ def voice_status_callback(status_message: str, debug_message: str):
     global _status_change_listener, _avatar_frames_lock, _avatar_frames_map
     global _bouncing_active, _bouncing_start_time, _bouncing_enabled, _last_known_voice_status
     global _cross_fade_active, _cross_fade_start_time, _old_avatar_frames_data, _cross_fade_enabled, CROSS_FADE_DURATION_MS
-    global _reset_animation_on_status_change
+    global _reset_animation_on_status_change, _instant_talk_transition
 
     if _status_change_listener:
         _status_change_listener(status_message, debug_message)
@@ -538,20 +567,26 @@ def voice_status_callback(status_message: str, debug_message: str):
 
         # Сравниваем объекты, чтобы определить, действительно ли это новый набор кадров
         if new_active_avatar_data is not _current_active_avatar_frames:
-            # Если включен кроссфейд, сохраняем данные старого аватара
-            if _cross_fade_enabled:
+            # Логика для INSTANT_TALK_TRANSITION: если включен и статус "Говорит"
+            if _instant_talk_transition and status_message == "Говорит":
+                _cross_fade_active = False  # Отключаем кроссфейд для этого перехода
+                _old_avatar_frames_data = {"frames": [], "original_fps": 1.0,
+                                           "current_float_index": 0.0}  # Очищаем старые данные для чистого появления
+            elif _cross_fade_enabled:  # Если INSTANT_TALK_TRANSITION не активен или не статус "Говорит", и кроссфейд включен
                 _old_avatar_frames_data = _current_active_avatar_frames
-                # _old_avatar_fade_float_index больше не нужен как глобальный, т.к. хранится в _old_avatar_frames_data
                 _cross_fade_active = True
                 _cross_fade_start_time = time.time()
+            else:  # Если кроссфейд выключен
+                _cross_fade_active = False
+                _old_avatar_frames_data = {"frames": [], "original_fps": 1.0, "current_float_index": 0.0}
 
             # Обновляем текущий активный аватар
             _current_active_avatar_frames = new_active_avatar_data
             _current_avatar_frame_index = 0  # Целочисленный индекс сбрасываем
 
             # Применяем логику сброса/продолжения анимации для НОВОГО активного аватара
-            if _reset_animation_on_status_change:
-                # Сбрасываем плавающий индекс только для НОВОГО активного аватара
+            # Если это мгновенный переход на "Говорит" или сброс включен, сбрасываем индекс
+            if (_instant_talk_transition and status_message == "Говорит") or _reset_animation_on_status_change:
                 _current_active_avatar_frames['current_float_index'] = 0.0
                 # else: если RESET_ANIMATION_ON_STATUS_CHANGE False,
             # new_active_avatar_data['current_float_index'] сохраняет свое предыдущее значение для этого статуса.
@@ -564,7 +599,8 @@ def voice_status_callback(status_message: str, debug_message: str):
                 if fallback_data is not _current_active_avatar_frames:
                     _current_active_avatar_frames = fallback_data
                     _current_avatar_frame_index = 0
-                    if _reset_animation_on_status_change:
+                    if (
+                            _instant_talk_transition and status_message == "Говорит") or _reset_animation_on_status_change:  # Сброс и для запасного варианта
                         _current_active_avatar_frames['current_float_index'] = 0.0
                     print(
                         f"ПРЕДУПРЕЖДЕНИЕ (voice_status_callback): Кадры для статуса '{status_message}' не найдены. Использую запасной вариант 'Молчит' ({len(fallback_frames)} кадров).")
