@@ -1,0 +1,9 @@
+/.idea/
+/build/main_script/
+/downloaded_avatars/
+/dsreactive/
+/logs/
+/playwright_profile/
+/playwright_user_data/
+/reactive_avatar/
+/config.txt
