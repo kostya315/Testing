@@ -385,12 +385,12 @@ def voice_status_callback(status_message: str, debug_message: str):
             if new_active_frames is not _current_active_avatar_frames: # Если набор кадров изменился
                 _current_active_avatar_frames = new_active_frames
                 _current_avatar_frame_index = 0 # Сбрасываем индекс при смене анимации
-                print(
-                    f"DEBUG (voice_status_callback): Аватар обновлен на '{status_message}' ({len(_current_active_avatar_frames)} кадров).")
-            else:
-                # Если статус тот же и набор кадров не изменился, просто продолжаем текущую анимацию.
-                print(
-                    f"DEBUG (voice_status_callback): Статус '{status_message}' получен, но аватар не изменился. Продолжаю текущую анимацию.")
+            #     print(
+            #         f"DEBUG (voice_status_callback): Аватар обновлен на '{status_message}' ({len(_current_active_avatar_frames)} кадров).")
+            # else:
+            #     # Если статус тот же и набор кадров не изменился, просто продолжаем текущую анимацию.
+            #     print(
+            #         f"DEBUG (voice_status_callback): Статус '{status_message}' получен, но аватар не изменился. Продолжаю текущую анимацию.")
         else:
             # Если для полученного статуса нет кадров, используем запасной вариант 'Молчит'.
             fallback_frames = _avatar_frames_map.get("Молчит", [])

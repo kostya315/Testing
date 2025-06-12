@@ -684,7 +684,7 @@ class CameraWindow(QWidget):
         Обновляет внутреннее состояние.
         Анимация будет отображаться через virtual_camera и поступать в display_queue.
         """
-        print(f"DEBUG GUI (_handle_status_update_on_gui_thread): Received status='{status_message}'")
+        # print(f"DEBUG GUI (_handle_status_update_on_gui_thread): Received status='{status_message}'")
         self.status = status_message # Update GUI's internal status
         # НЕ вызываем _update_demo_image_with_status_circle() здесь.
         # Фактические обновления кадров поступают из check_for_new_frame, извлекающего данные из display_queue.
@@ -747,8 +747,8 @@ class CustomStatusHandler(QObject):
         self.status_display_signal.emit(status_message, debug_message) # Emit both messages
         # Прямая печать в консоль с ANSI-кодами или управление курсором больше не нужны.
         # Все print() вызовы автоматически перенаправляются в лог через logging_manager.
-        print(f"Статус голоса: {status_message}")
-        print(f"[Debug Python] {debug_message}")
+        #print(f"Статус голоса: {status_message}")
+        #print(f"[Debug Python] {debug_message}")
 
 
 def start_gui():

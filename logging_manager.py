@@ -2,6 +2,7 @@ import sys
 import os
 import datetime
 import threading
+import glob  # Для работы с шаблонами файлов
 
 # Объявляем глобальную переменную для объекта-перенаправителя, чтобы его можно было получить
 _global_log_redirector = None
@@ -13,8 +14,9 @@ class LoggerRedirector:
     Сохраняет текущий вывод в 'latest.log' и создает ежедневные архивы.
     """
 
-    def __init__(self, log_dir="logs"):
+    def __init__(self, log_dir="logs", max_log_files=10):
         self.log_dir = log_dir
+        self.max_log_files = max_log_files  # Максимальное количество архивных файлов для хранения
         # Определяем базовую директорию для логов.
         # Если приложение скомпилировано PyInstaller, sys._MEIPASS указывает на временную папку.
         # В этом случае, мы хотим, чтобы логи писались рядом с основным исполняемым файлом.
@@ -37,61 +39,92 @@ class LoggerRedirector:
         self._open_new_log_file()
 
     def _open_new_log_file(self):
-        """Открывает новый файл журнала с временной меткой и обрабатывает rotation."""
+        """
+        Открывает новый файл журнала, управляет ротацией, оставляя только MAX_LOG_FILES последних файлов.
+        """
         if self.log_file and not self.log_file.closed:
             self.log_file.close()
+        # if hasattr(self, '_archive_file') and self._archive_file and not self._archive_file.closed:
+        #     self._archive_file.close() # Removed as we are not using a separate archive file handle anymore
 
-        timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        self.current_log_path = os.path.join(self.full_log_dir, f"{timestamp}.log")
+        # Шаг 1: Переименовываем текущий latest.log в файл с временной меткой (если он существует)
+        if os.path.exists(self.latest_log_path):
+            timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            # Добавляем случайное число, чтобы избежать конфликтов при очень быстром запуске
+            unique_timestamp_path = os.path.join(self.full_log_dir, f"{timestamp}.log")
+            counter = 0
+            while os.path.exists(unique_timestamp_path):
+                counter += 1
+                unique_timestamp_path = os.path.join(self.full_log_dir, f"{timestamp}_{counter}.log")
 
+            try:
+                os.rename(self.latest_log_path, unique_timestamp_path)
+                # print(f"DEBUG: 'latest.log' переименован в '{os.path.basename(unique_timestamp_path)}'") # Отладочный вывод
+            except Exception as e:
+                if self.stdout:
+                    self.stdout.write(
+                        f"ОШИБКА: Не удалось переименовать 'latest.log' в '{os.path.basename(unique_timestamp_path)}': {e}\n")
+                # В случае ошибки переименования, мы не можем гарантировать, что latest.log пуст
+                # и не будет конфликтовать с новым, поэтому можем выйти или продолжить с ошибкой.
+                # Для стабильности просто оставляем его как есть и попытаемся открыть новый.
+
+        # Шаг 2: Открываем новый latest.log для записи (используем 'w' для создания нового пустого файла)
         try:
-            # Сначала перемещаем старый latest.log в файл с временной меткой, если он существует
-            if os.path.exists(self.latest_log_path):
-                # Если файл с таким timestamp уже существует (очень маловероятно, но на всякий случай)
-                if os.path.exists(self.current_log_path):
-                    os.remove(self.current_log_path)
-                os.rename(self.latest_log_path, self.current_log_path)
-
-            # Открываем новый latest.log для записи
-            self.log_file = open(self.latest_log_path, 'a', encoding='utf-8')
-            # Также записываем в новый файл с timestamp для сохранения истории
-            self._archive_file = open(self.current_log_path, 'a', encoding='utf-8')
-
+            self.log_file = open(self.latest_log_path, 'w', encoding='utf-8')
         except Exception as e:
             # Если не удалось открыть файл журнала, выводим ошибку в исходную консоль
             if self.stdout:
                 self.stdout.write(f"ОШИБКА: Не удалось открыть файл журнала: {e}\n")
             self.log_file = None  # Устанавливаем None, чтобы предотвратить дальнейшие попытки записи в несуществующий файл
-            self._archive_file = None
+            self._archive_file = None  # Ensure this is explicitly None
+
+        # Шаг 3: Удаляем старые архивные логи, чтобы сохранить только MAX_LOG_FILES
+        archived_logs = []
+        for f_path in glob.glob(os.path.join(self.full_log_dir, "*.log")):
+            if os.path.basename(f_path) != "latest.log":  # Исключаем текущий latest.log
+                archived_logs.append((os.path.getmtime(f_path), f_path))  # (время модификации, путь к файлу)
+
+        # Сортируем по времени модификации в возрастающем порядке (самые старые первыми)
+        archived_logs.sort(key=lambda x: x[0], reverse=False)
+
+        # Удаляем лишние логи, оставляя только self.max_log_files
+        # Если у нас уже есть MAX_LOG_FILES-1 архивных логов (потому что latest.log будет 10-м)
+        # то мы хотим удалить самые старые, пока их не станет MAX_LOG_FILES-1
+        # Или, более просто: если всего файлов (latest + archives) > MAX_LOG_FILES
+        # то мы хотим, чтобы количество архивных файлов было не более MAX_LOG_FILES - 1
+        num_logs_to_keep = self.max_log_files - 1  # Количество архивных логов, которые мы хотим оставить
+
+        if len(archived_logs) > num_logs_to_keep:
+            for i in range(len(archived_logs) - num_logs_to_keep):
+                f_path_to_delete = archived_logs[i][1]
+                try:
+                    os.remove(f_path_to_delete)
+                    # print(f"DEBUG: Удален старый лог-файл: {os.path.basename(f_path_to_delete)}") # Отладочный вывод
+                except Exception as e:
+                    if self.stdout:
+                        self.stdout.write(
+                            f"ОШИБКА: Не удалось удалить старый лог-файл '{os.path.basename(f_path_to_delete)}': {e}\n")
 
     def write(self, message):
-        """Пишет сообщение в файл журнала и, опционально, в исходную консоль."""
+        """Пишет сообщение в файл журнала."""
         with self.lock:
-            # Всегда пишем в 'latest.log'
             if self.log_file and not self.log_file.closed:
                 self.log_file.write(message)
                 self.log_file.flush()  # Немедленно сбрасываем буфер
 
-            # Также пишем в архивный файл (если он открыт)
-            if self._archive_file and not self._archive_file.closed:
-                self._archive_file.write(message)
-                self._archive_file.flush()  # Немедленно сбрасываем буфер
-
             # Если мы запускаемся не как exe и хотим видеть вывод в консоли во время разработки,
             # можно раскомментировать следующую строку:
             # if not getattr(sys, 'frozen', False) and self.stdout:
-            #     self.stdout.write(message)
-            #     self.stdout.flush()
+            #      self.stdout.write(message)
+            #      self.stdout.flush()
 
     def flush(self):
         """Метод flush требуется для совместимости со стандартными потоками."""
         if self.log_file and not self.log_file.closed:
             self.log_file.flush()
-        if self._archive_file and not self._archive_file.closed:
-            self._archive_file.flush()
         # Если мы выводим в оригинальный stdout (например, при разработке), также сбрасываем его
         # if not getattr(sys, 'frozen', False) and self.stdout:
-        #     self.stdout.flush()
+        #      self.stdout.flush()
 
     def close(self):
         """Закрывает все открытые файлы журнала."""
@@ -99,7 +132,7 @@ class LoggerRedirector:
             if self.log_file and not self.log_file.closed:
                 self.log_file.close()
                 self.log_file = None
-            if self._archive_file and not self._archive_file.closed:
+            if hasattr(self, '_archive_file') and self._archive_file and not self._archive_file.closed:
                 self._archive_file.close()
                 self._archive_file = None
 
@@ -111,7 +144,7 @@ def setup_logging():
     """
     global _global_log_redirector
     if _global_log_redirector is None:
-        _global_log_redirector = LoggerRedirector()
+        _global_log_redirector = LoggerRedirector(max_log_files=10)  # Установлено 10 последних логов
         sys.stdout = _global_log_redirector
         sys.stderr = _global_log_redirector
         # sys.excepthook = handle_exception # Можно добавить свой обработчик исключений, если нужно
@@ -154,4 +187,3 @@ def handle_exception(exc_type, exc_value, exc_traceback):
     #     QMessageBox.critical(None, "Ошибка приложения", "Произошла критическая ошибка. Подробности в лог-файле.")
     # else:
     #     print("Критическая ошибка: Приложение не GUI, не удалось показать сообщение.")
-
