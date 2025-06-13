@@ -12,6 +12,8 @@ import math  # Для math.sin() - для плавности анимации
 
 # Импортируем config_manager
 import config_manager
+# Импортируем POLLING_INTERVAL_SECONDS из reactive_monitor
+from reactive_monitor import POLLING_INTERVAL_SECONDS
 
 # --- КОНФИГУРАЦИЯ ПУТЕЙ ---
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -105,6 +107,9 @@ STATUS_TO_FILENAME_MAP = {
 # Базовое имя для фонового изображения (изменено по запросу пользователя)
 BACKGROUND_IMAGE_PATH = "BG"
 
+# New global flag to signal GUI that camera parameters changed and it needs restart
+_camera_needs_restart = False
+
 
 def set_status_callback(callback_func):
     """Устанавливает функцию обратного вызова для обновления статуса."""
@@ -165,109 +170,93 @@ def _load_frames_from_file(base_name: str, is_avatar: bool = False):
 def initialize_virtual_camera():
     """
     Инициализирует объект виртуальной камеры pyvirtualcam и предварительно загружает все изображения.
-    Эта функция вызывается только один раз из main_script.py.
+    Эта функция предназначена для вызова из gui_elements.py.
     """
     global virtual_cam_obj, CAM_WIDTH, CAM_HEIGHT, CAM_FPS
     global _background_frames_list, _original_background_fps, _avatar_frames_map, _current_active_avatar_frames, _avatar_frames_lock
     global _bouncing_enabled, _current_background_frame_float_index
     global _cross_fade_enabled, CROSS_FADE_DURATION_MS, _reset_animation_on_status_change, _instant_talk_transition
-    global _dim_enabled, DIM_PERCENTAGE  # Инициализация новых глобальных переменных
+    global _dim_enabled, DIM_PERCENTAGE
 
+    # Close existing camera if it's active before re-initializing
     if virtual_cam_obj is not None and virtual_cam_obj is not False:
-        print("Виртуальная камера уже инициализирована.")
-        return
+        print("Виртуальная камера уже активна. Закрываю перед повторной инициализацией.")
+        try:
+            virtual_cam_obj.close()
+        except Exception as e:
+            print(f"Ошибка при закрытии существующей виртуальной камеры: {e}")
+        virtual_cam_obj = None  # Ensure it's explicitly None
 
-    print("\n--- Предварительная загрузка изображений и анимаций ---")
+    print("\n--- Инициализация виртуальной камеры и предварительная загрузка изображений/анимаций ---")
 
-    # --- Загрузка конфигурации для BOUNCING_ENABLED, CAM_FPS, CROSS_FADE_ENABLED, CROSS_FADE_DURATION_MS, RESET_ANIMATION_ON_STATUS_CHANGE, INSTANT_TALK_TRANSITION, DIM_ENABLED, DIM_PERCENTAGE ---
-    config = config_manager.load_config()
+    config = config_manager.load_config()  # Always load the latest config
+
+    # Update all global variables from config
     _bouncing_enabled = config.get('BOUNCING_ENABLED', 'True').lower() == 'true'
     _cross_fade_enabled = config.get('CROSS_FADE_ENABLED', 'True').lower() == 'true'
     _reset_animation_on_status_change = config.get('RESET_ANIMATION_ON_STATUS_CHANGE', 'True').lower() == 'true'
     _instant_talk_transition = config.get('INSTANT_TALK_TRANSITION', 'True').lower() == 'true'
-    _dim_enabled = config.get('DIM_ENABLED', 'True').lower() == 'true'  # Считываем новую настройку
+    _dim_enabled = config.get('DIM_ENABLED', 'True').lower() == 'true'
 
-    try:  # Считываем DIM_PERCENTAGE из конфига
+    try:
         dim_percentage_from_config = int(config.get('DIM_PERCENTAGE', '50'))
-        if not (0 <= dim_percentage_from_config <= 100):  # Проверка на корректность процента
-            print(
-                f"ПРЕДУПРЕЖДЕНИЕ: Недопустимое значение DIM_PERCENTAGE в конфиге: {dim_percentage_from_config}. Использован стандартный процент: 50.")
-            DIM_PERCENTAGE = 50
-        else:
-            DIM_PERCENTAGE = dim_percentage_from_config
+        DIM_PERCENTAGE = dim_percentage_from_config if 0 <= dim_percentage_from_config <= 100 else 50
     except ValueError:
-        print(f"ПРЕДУПРЕЖДЕНИЕ: Некорректный формат DIM_PERCENTAGE в конфиге. Использован стандартный процент: 50.")
         DIM_PERCENTAGE = 50
 
-    # Считываем CAM_FPS из конфига, если есть, иначе используем значение по умолчанию
     try:
         CAM_FPS_from_config = int(config.get('CAM_FPS', str(_initial_cam_fps_default)))
-        if CAM_FPS_from_config <= 0:
-            print(
-                f"ПРЕДУПРЕЖДЕНИЕ: Недопустимое значение CAM_FPS в конфиге: {CAM_FPS_from_config}. Использован стандартный FPS: {_initial_cam_fps_default}.")
-            CAM_FPS = _initial_cam_fps_default
-        else:
-            CAM_FPS = CAM_FPS_from_config
+        CAM_FPS = CAM_FPS_from_config if CAM_FPS_from_config > 0 else _initial_cam_fps_default
     except ValueError:
-        print(
-            f"ПРЕДУПРЕЖДЕНИЕ: Некорректный формат CAM_FPS в конфиге. Использован стандартный FPS: {_initial_cam_fps_default}.")
         CAM_FPS = _initial_cam_fps_default
 
-    # Считываем CROSS_FADE_DURATION_MS из конфига
+    try:
+        CAM_WIDTH_from_config = int(config.get('CAM_WIDTH', '640'))
+        CAM_HEIGHT_from_config = int(config.get('CAM_HEIGHT', '360'))
+        CAM_WIDTH = CAM_WIDTH_from_config if CAM_WIDTH_from_config > 0 else 640
+        CAM_HEIGHT = CAM_HEIGHT_from_config if CAM_HEIGHT_from_config > 0 else 360
+    except ValueError:
+        CAM_WIDTH = 640
+        CAM_HEIGHT = 360
+
     try:
         fade_duration_from_config = int(config.get('CROSS_FADE_DURATION_MS', str(_initial_cross_fade_duration_default)))
-        if fade_duration_from_config < 0:
-            print(
-                f"ПРЕДУПРЕЖДЕНИЕ: Недопустимое значение CROSS_FADE_DURATION_MS в конфиге: {fade_duration_from_config}. Использована стандартная длительность: {_initial_cross_fade_duration_default}.")
-            CROSS_FADE_DURATION_MS = _initial_cross_fade_duration_default
-        else:
-            CROSS_FADE_DURATION_MS = fade_duration_from_config
+        CROSS_FADE_DURATION_MS = fade_duration_from_config if fade_duration_from_config >= 0 else _initial_cross_fade_duration_default
     except ValueError:
-        print(
-            f"ПРЕДУПРЕЖДЕНИЕ: Некорректный формат CROSS_FADE_DURATION_MS в конфиге. Использована стандартная длительность: {_initial_cross_fade_duration_default}.")
         CROSS_FADE_DURATION_MS = _initial_cross_fade_duration_default
 
-    # Загрузка фонового изображения (всегда обрабатывается как не-аватар)
+    # Load background image
     _background_frames_list, _original_background_fps = _load_frames_from_file(BACKGROUND_IMAGE_PATH, is_avatar=False)
     if not _background_frames_list:
         print("КРИТИЧЕСКАЯ ОШИБКА: Не удалось загрузить фоновое изображение. Не могу инициализировать камеру.")
-        virtual_cam_obj = False
+        virtual_cam_obj = False  # Signal failure to launch camera
         return
 
-    # Определяем размеры камеры по первому кадру фона
-    CAM_HEIGHT, CAM_WIDTH, _ = _background_frames_list[0].shape
-
-    # Загрузка аватаров и их оригинальных FPS
+    # Load avatars
     for status, filename in STATUS_TO_FILENAME_MAP.items():
         frames, original_fps = _load_frames_from_file(filename, is_avatar=True)
-        # Инициализируем current_float_index для каждого статуса
         _avatar_frames_map[status] = {"frames": frames, "original_fps": original_fps, "current_float_index": 0.0}
         if not frames:
             print(f"ПРЕДУПРЕЖДЕНИЕ: Не удалось загрузить аватар для статуса '{status}'. Использую пустой набор кадров.")
 
-    # Устанавливаем начальный активный аватар (например, "Молчит")
+    # Set initial active avatar (e.g., "Inactive")
     with _avatar_frames_lock:
-        # Убедимся, что дефолтная заглушка также имеет full data structure
         _current_active_avatar_frames = _avatar_frames_map.get("Молчит", {"frames": [], "original_fps": 1.0,
                                                                           "current_float_index": 0.0})
         _current_background_frame_float_index = 0.0
 
     try:
-        print(f"Инициализация виртуальной камеры: {CAM_WIDTH}x{CAM_HEIGHT} @ {CAM_FPS} FPS...")
-        # Устанавливаем формат пикселей RGB, так как _compose_frame возвращает RGB
+        print(f"Создание виртуальной камеры: {CAM_WIDTH}x{CAM_HEIGHT} @ {CAM_FPS} FPS...")
         virtual_cam_obj = pyvirtualcam.Camera(width=CAM_WIDTH, height=CAM_HEIGHT, fps=CAM_FPS, print_fps=False,
                                               fmt=pyvirtualcam.PixelFormat.RGB)
-        print("Виртуальная камера успешно инициализирована.")
+        print("Виртуальная камера успешно создана.")
 
-        # Получаем первый кадр для инициализации
         initial_avatar_data = _avatar_frames_map.get("Молчит",
                                                      {"frames": [], "original_fps": 1.0, "current_float_index": 0.0})
         initial_avatar_frames = initial_avatar_data['frames']
 
         if not initial_avatar_frames:
-            initial_avatar_frames = [
-                np.zeros((CAM_HEIGHT, CAM_WIDTH, 4),
-                         dtype=np.uint8)]  # Если даже "Молчит" пуст, используем пустой черный квадрат
+            initial_avatar_frames = [np.zeros((CAM_HEIGHT, CAM_WIDTH, 4), dtype=np.uint8)]
             print("ПРЕДУПРЕЖДЕНИЕ: Нет кадров для 'Молчит' при инициализации. Использую заглушку.")
 
         initial_frame = _compose_frame(_background_frames_list[0], initial_avatar_frames[0], y_offset_addition=0)
@@ -275,6 +264,8 @@ def initialize_virtual_camera():
         virtual_cam_obj.sleep_until_next_frame()
 
         try:
+            while not display_queue.empty():  # Clear queue before putting initial frame
+                display_queue.get_nowait()
             display_queue.put_nowait(initial_frame)
         except queue.Full:
             pass
@@ -283,7 +274,88 @@ def initialize_virtual_camera():
         print(f"КРИТИЧЕСКАЯ ОШИБКА: Не удалось инициализировать виртуальную камеру: {e}")
         print(
             "Пожалуйста, убедитесь, что у вас установлен драйвер виртуальной камеры (например, OBS Virtual Camera) и вы запустили 'pip install pyvirtualcam opencv-python Pillow'.")
-        virtual_cam_obj = False
+        virtual_cam_obj = False  # Mark as failed initialization
+
+
+def update_camera_parameters():
+    """
+    Обновляет глобальные переменные виртуальной камеры и анимации из конфига.
+    Эта функция НЕ создает и НЕ закрывает объект камеры pyvirtualcam.
+    Она только обновляет глобальные переменные и устанавливает флаг _camera_needs_restart,
+    если критические параметры (разрешение или FPS) изменились.
+    Фактический перезапуск камеры (объекта pyvirtualcam) должен быть выполнен управляющим потоком (GUI).
+    """
+    global CAM_WIDTH, CAM_HEIGHT, CAM_FPS
+    global _bouncing_enabled, _cross_fade_enabled, CROSS_FADE_DURATION_MS
+    global _reset_animation_on_status_change, _instant_talk_transition
+    global _dim_enabled, DIM_PERCENTAGE
+    global _camera_needs_restart  # New flag
+
+    print("\n--- Обновление параметров виртуальной камеры в рантайме (только глобальные переменные) ---")
+
+    old_cam_width = CAM_WIDTH
+    old_cam_height = CAM_HEIGHT
+    old_cam_fps = CAM_FPS
+
+    config = config_manager.load_config()
+
+    # Update all global variables
+    _bouncing_enabled = config.get('BOUNCING_ENABLED', 'True').lower() == 'true'
+    _cross_fade_enabled = config.get('CROSS_FADE_ENABLED', 'True').lower() == 'true'
+    _reset_animation_on_status_change = config.get('RESET_ANIMATION_ON_STATUS_CHANGE', 'True').lower() == 'true'
+    _instant_talk_transition = config.get('INSTANT_TALK_TRANSITION', 'True').lower() == 'true'
+    _dim_enabled = config.get('DIM_ENABLED', 'True').lower() == 'true'
+
+    try:
+        dim_percentage_from_config = int(config.get('DIM_PERCENTAGE', '50'))
+        DIM_PERCENTAGE = dim_percentage_from_config if 0 <= dim_percentage_from_config <= 100 else 50
+    except ValueError:
+        DIM_PERCENTAGE = 50
+
+    try:
+        CAM_FPS_from_config = int(config.get('CAM_FPS', str(_initial_cam_fps_default)))
+        CAM_FPS = CAM_FPS_from_config if CAM_FPS_from_config > 0 else _initial_cam_fps_default
+    except ValueError:
+        CAM_FPS = _initial_cam_fps_default
+
+    try:
+        CAM_WIDTH_from_config = int(config.get('CAM_WIDTH', '640'))
+        CAM_HEIGHT_from_config = int(config.get('CAM_HEIGHT', '360'))
+        CAM_WIDTH = CAM_WIDTH_from_config if CAM_WIDTH_from_config > 0 else 640
+        CAM_HEIGHT = CAM_HEIGHT_from_config if CAM_HEIGHT_from_config > 0 else 360
+    except ValueError:
+        CAM_WIDTH = 640
+        CAM_HEIGHT = 360
+
+    try:
+        fade_duration_from_config = int(config.get('CROSS_FADE_DURATION_MS', str(_initial_cross_fade_duration_default)))
+        CROSS_FADE_DURATION_MS = fade_duration_from_config if fade_duration_from_config >= 0 else _initial_cross_fade_duration_default
+    except ValueError:
+        CROSS_FADE_DURATION_MS = _initial_cross_fade_duration_default
+
+    # Set flag if critical camera parameters changed
+    if (old_cam_width != CAM_WIDTH or
+            old_cam_height != CAM_HEIGHT or
+            old_cam_fps != CAM_FPS):
+        _camera_needs_restart = True
+        print("Параметры камеры (разрешение или FPS) изменились. Сигнализирую GUI о необходимости перезапуска камеры.")
+    else:
+        _camera_needs_restart = False
+        print("Параметры камеры (разрешение, FPS) не изменились. Обновлены только внутренние настройки анимации.")
+
+    print("Параметры виртуальной камеры и настройки анимации успешно обновлены (только глобальные).")
+
+
+def get_camera_needs_restart_flag():
+    """Returns the flag indicating if camera needs restart."""
+    global _camera_needs_restart
+    return _camera_needs_restart
+
+
+def reset_camera_needs_restart_flag():
+    """Resets the flag indicating if camera needs restart."""
+    global _camera_needs_restart
+    _camera_needs_restart = False
 
 
 def _compose_frame(background_frame_rgb: np.ndarray, avatar_rgba_image: np.ndarray | None,
@@ -299,6 +371,12 @@ def _compose_frame(background_frame_rgb: np.ndarray, avatar_rgba_image: np.ndarr
 
     if background_frame_rgb is None or CAM_WIDTH == 0 or CAM_HEIGHT == 0:
         return np.zeros((480, 640, 3), dtype=np.uint8)
+
+    # Проверка, что background_frame_rgb соответствует текущим CAM_WIDTH и CAM_HEIGHT
+    # Если нет, масштабируем его до нужного размера
+    if background_frame_rgb.shape[0] != CAM_HEIGHT or background_frame_rgb.shape[1] != CAM_WIDTH:
+        # print(f"DEBUG: Масштабирование фона с {background_frame_rgb.shape[1]}x{background_frame_rgb.shape[0]} до {CAM_WIDTH}x{CAM_HEIGHT}")
+        background_frame_rgb = cv2.resize(background_frame_rgb, (CAM_WIDTH, CAM_HEIGHT), interpolation=cv2.INTER_AREA)
 
     output_frame = background_frame_rgb.copy()
 
@@ -429,16 +507,22 @@ async def start_frame_sending_loop():
                 if _background_frames_list:
                     background_frame_advance_factor = _original_background_fps / CAM_FPS
                     _current_background_frame_float_index = (
-                                                                        _current_background_frame_float_index + background_frame_advance_factor) % len(
+                                                                    _current_background_frame_float_index + background_frame_advance_factor) % len(
                         _background_frames_list)
                     background_idx_to_use = int(math.floor(_current_background_frame_float_index))
-                    _current_background_frame_index = background_idx_to_use
+                    background_frame_to_composite = _background_frames_list[
+                        background_idx_to_use] if _background_frames_list else np.zeros((CAM_HEIGHT, CAM_WIDTH, 3),
+                                                                                        dtype=np.uint8)
+                    # Если размеры фона не соответствуют CAM_WIDTH/HEIGHT, масштабируем
+                    if background_frame_to_composite.shape[0] != CAM_HEIGHT or background_frame_to_composite.shape[
+                        1] != CAM_WIDTH:
+                        background_frame_to_composite = cv2.resize(background_frame_to_composite,
+                                                                   (CAM_WIDTH, CAM_HEIGHT),
+                                                                   interpolation=cv2.INTER_AREA)
+
                 else:
                     print("ПРЕДУПРЕЖДЕНИЕ: Список фоновых кадров пуст. Используется индекс 0.")
-
-                background_frame_to_composite = _background_frames_list[
-                    background_idx_to_use] if _background_frames_list else np.zeros((CAM_HEIGHT, CAM_WIDTH, 3),
-                                                                                    dtype=np.uint8)
+                    background_frame_to_composite = np.zeros((CAM_HEIGHT, CAM_WIDTH, 3), dtype=np.uint8)
 
                 # --- Обработка аватара (с кроссфейдом или без) ---
                 current_avatar_data = _current_active_avatar_frames
@@ -451,7 +535,7 @@ async def start_frame_sending_loop():
                     frame_advance_factor_current = current_original_avatar_fps / CAM_FPS
                     # Обновляем плавающий индекс и сохраняем его обратно в данных аватара
                     current_avatar_data['current_float_index'] = (
-                                                                             current_avatar_float_index_for_use + frame_advance_factor_current) % len(
+                                                                         current_avatar_float_index_for_use + frame_advance_factor_current) % len(
                         current_avatar_frames_list)
                     avatar_idx_to_use_current = int(math.floor(current_avatar_data['current_float_index']))
                     current_avatar_rgba = current_avatar_frames_list[avatar_idx_to_use_current].copy()
@@ -479,7 +563,7 @@ async def start_frame_sending_loop():
                             frame_advance_factor_old = old_original_avatar_fps / CAM_FPS
                             # Обновляем плавающий индекс старого аватара и сохраняем его обратно
                             _old_avatar_frames_data['current_float_index'] = (
-                                                                                         old_avatar_float_index_for_use + frame_advance_factor_old) % len(
+                                                                                     old_avatar_float_index_for_use + frame_advance_factor_old) % len(
                                 old_avatar_frames_list)
                             avatar_idx_to_use_old = int(math.floor(_old_avatar_frames_data['current_float_index']))
                             old_avatar_rgba = old_avatar_frames_list[avatar_idx_to_use_old].copy()
@@ -517,6 +601,12 @@ async def start_frame_sending_loop():
             composed_frame_rgb = _compose_frame(background_frame_to_composite, final_avatar_image_rgba,
                                                 y_offset_addition=current_bounce_offset)
 
+            # Если камера не была успешно инициализирована или была отключена, пропускаем отправку
+            if virtual_cam_obj is False or virtual_cam_obj is None:
+                # print("ПРЕДУПРЕЖДЕНИЕ: Виртуальная камера не активна. Кадры не отправляются.")
+                await asyncio.sleep(POLLING_INTERVAL_SECONDS)  # Пауза, чтобы не нагружать ЦПУ
+                continue  # Продолжаем цикл, ожидая, что камера может быть инициализирована позже
+
             if composed_frame_rgb is not None:
                 try:
                     virtual_cam_obj.send(composed_frame_rgb)
@@ -530,8 +620,12 @@ async def start_frame_sending_loop():
                         pass
                 except Exception as e:
                     print(f"ОШИБКА отправки кадра в виртуальную камеру или GUI: {e}")
-                    _cam_loop_running = False
+                    # При ошибке отправки кадра, помечаем камеру как неактивную
+                    virtual_cam_obj = False
+                    # Не останавливаем цикл, просто пропускаем текущий кадр и ждем следующего.
+                    # GUI должен обнаружить, что камера неактивна, и попытаться ее реинициализировать.
             else:
+                # Если композитный кадр пуст, отправляем просто фоновый кадр
                 virtual_cam_obj.send(background_frame_to_composite)
                 virtual_cam_obj.sleep_until_next_frame()
                 try:
@@ -627,13 +721,17 @@ def shutdown_virtual_camera():
     """Закрывает объект виртуальной камеры и останавливает цикл отправки кадров."""
     global virtual_cam_obj, _cam_loop_running
 
-    _cam_loop_running = False
+    _cam_loop_running = False  # This will cause the asyncio loop in the thread to terminate
 
     if virtual_cam_obj and virtual_cam_obj is not False:
         print("Закрытие виртуальной камеры...")
-        virtual_cam_obj.close()
-        virtual_cam_obj = None
-        print("Виртуальная камера закрыта.")
+        try:
+            virtual_cam_obj.close()
+            virtual_cam_obj = None
+            print("Виртуальная камера закрыта.")
+        except Exception as e:
+            print(f"Ошибка при закрытии виртуальной камеры: {e}")
+            virtual_cam_obj = None  # Ensure it's None even if close fails
 
 
 # Этот блок будет выполнен только при прямом запуске virtual_camera.py,

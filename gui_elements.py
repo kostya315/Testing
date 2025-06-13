@@ -144,7 +144,7 @@ class SettingsWindow(QWidget):
     DEFAULT_CONFIG = {
         'CROSS_FADE_ENABLED': 'True',
         'BOUNCING_ENABLED': 'True',
-        'CAM_FPS': '60',  # Изменено на '60'
+        'CAM_FPS': '60',
         'CAM_WIDTH': '640',
         'CAM_HEIGHT': '360',
         'CROSS_FADE_DURATION_MS': '200',
@@ -462,10 +462,6 @@ class SettingsWindow(QWidget):
     def reset_settings(self):
         """Сбрасывает все настройки к значениям по умолчанию."""
         self.load_settings_into_gui(self.DEFAULT_CONFIG)
-        # Удалены строки, которые отображали сообщение "Настройки сброшены!"
-        # self.save_message_label.setText("Настройки сброшены!") # Display reset message
-        # self.save_message_label.show()
-        # QTimer.singleShot(2000, self.save_message_label.hide) # Hide after 2 seconds
 
     def load_window_state(self):
         """Загружает сохраненное положение окна настроек."""
@@ -606,9 +602,10 @@ class SettingsWindow(QWidget):
 
         # Сохранение CAM_FPS
         try:
-            updated_config['CAM_FPS'] = self.cam_fps_input.text()
+            new_fps_str = self.cam_fps_input.text()
+            updated_config['CAM_FPS'] = new_fps_str
         except KeyError:
-            pass  # Если поле не найдено, ничего не делаем
+            pass
 
         # Сохранение CAM_WIDTH, CAM_HEIGHT из QComboBox
         selected_res = self.resolution_combo.currentText()
@@ -620,7 +617,7 @@ class SettingsWindow(QWidget):
             QMessageBox.warning(self, "Ошибка ввода", "Неверный формат разрешения. Используйте WxH.")
             return
         except KeyError:
-            pass  # Если поля не найдены, ничего не делаем
+            pass
 
         # Сохранение Boolean параметров
         bool_params = [
@@ -635,14 +632,14 @@ class SettingsWindow(QWidget):
                 checkbox = self.config_widgets[param_key]
                 updated_config[param_key] = 'True' if checkbox.isChecked() else 'False'
             except KeyError:
-                pass  # Если виджет не найден, ничего не делаем
+                pass
 
         # Сохранение DIM_PERCENTAGE (инвертированное значение)
         try:
             current_brightness = int(self.dim_percentage_input.text())
             updated_config['DIM_PERCENTAGE'] = str(100 - current_brightness)  # Сохраняем как затемнение
         except KeyError:
-            pass  # Если поле не найдено, ничего не делаем
+            pass
         except ValueError:
             QMessageBox.warning(self, "Ошибка ввода",
                                 "Неверный формат для 'Яркость затемненного'. Используйте число от 0 до 100.")
@@ -652,15 +649,40 @@ class SettingsWindow(QWidget):
         try:
             updated_config['CROSS_FADE_DURATION_MS'] = self.cross_fade_duration_input.text()
         except KeyError:
-            pass  # Если поле не найдено, ничего не делаем
+            pass
 
         try:
             config_manager.save_config(updated_config)
             self.save_message_label.setText("Сохранено!")
             self.save_message_label.show()
-            QTimer.singleShot(2000, self.save_message_label.hide)  # Hide after 2 seconds
-            virtual_camera.initialize_virtual_camera()
-            # No self.close() here as requested by user
+            QTimer.singleShot(2000, self.save_message_label.hide)
+
+            # --- Apply changes and potentially restart camera ---
+            # Call update_camera_parameters to refresh global variables in virtual_camera.py
+            virtual_camera.update_camera_parameters()
+
+            # Now, check if a restart is needed based on the flag set by virtual_camera.update_camera_parameters()
+            if virtual_camera.get_camera_needs_restart_flag():
+                print("GUI: Параметры камеры изменились, перезапускаю поток камеры...")
+                # Stop existing camera thread
+                self.parent().stop_camera_thread()
+                # Reset the flag after processing
+                virtual_camera.reset_camera_needs_restart_flag()
+                # Re-initialize the virtual camera object (this will load new dimensions/fps)
+                virtual_camera.initialize_virtual_camera()
+                # Start a new camera thread
+                self.parent().start_camera_thread()
+                # Update GUI timer interval if FPS changed
+                self.parent().frame_timer.setInterval(
+                    1000 // (virtual_camera.CAM_FPS if virtual_camera.CAM_FPS > 0 else 30))
+                # Update the window size if resolution changed
+                self.parent().resize(self.parent().calculate_target_geometry())
+            else:
+                print("GUI: Параметры камеры не изменились. Перезапуск потока камеры не требуется.")
+                # If only animation parameters changed, ensure the timer is updated (it should be set by CAM_FPS)
+                self.parent().frame_timer.setInterval(
+                    1000 // (virtual_camera.CAM_FPS if virtual_camera.CAM_FPS > 0 else 30))
+
         except Exception as e:
             QMessageBox.critical(self, "Ошибка сохранения", f"Не удалось сохранить настройки: {e}")
 
@@ -1023,6 +1045,7 @@ class CameraWindow(QWidget):
 
         self.frame_timer = QTimer(self)
         self.frame_timer.timeout.connect(self.check_for_new_frame)
+        # Изначальный интервал таймера будет установлен после инициализации камеры
         self.frame_timer.start(1000 // (virtual_camera.CAM_FPS if virtual_camera.CAM_FPS > 0 else 30))
 
         self.status = "Молчит"
@@ -1040,8 +1063,43 @@ class CameraWindow(QWidget):
         self.settings = QSettings("ReactivePlus", "VirtualCameraReactive")
         self.load_window_state()
 
-        self._update_main_container_style()  # Устанавливаем начальный стиль углов
+        self._update_main_container_style()
         self._update_demo_image_with_status_circle()
+
+        self.camera_thread = None  # Initialize camera thread variable
+
+    def start_camera_thread(self):
+        """Starts the virtual camera frame sending thread."""
+        if self.camera_thread and self.camera_thread.is_alive():
+            print("GUI: Поток камеры уже запущен.")
+            return
+
+        print("GUI: Запуск нового потока камеры...")
+
+        def run_virtual_camera_asyncio():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(virtual_camera.start_frame_sending_loop())
+            loop.close()
+
+        self.camera_thread = threading.Thread(target=run_virtual_camera_asyncio)
+        self.camera_thread.daemon = True
+        self.camera_thread.start()
+        print("GUI: Поток камеры запущен.")
+
+    def stop_camera_thread(self):
+        """Stops the virtual camera frame sending thread."""
+        if self.camera_thread and self.camera_thread.is_alive():
+            print("GUI: Сигнализирую потоку камеры об остановке...")
+            virtual_camera.shutdown_virtual_camera()  # This sets _cam_loop_running to False
+            self.camera_thread.join(timeout=5)  # Wait for thread to finish, with a timeout
+            if self.camera_thread.is_alive():
+                print("ПРЕДУПРЕЖДЕНИЕ: Поток камеры не завершился в течение таймаута.")
+            else:
+                print("GUI: Поток камеры успешно остановлен.")
+            self.camera_thread = None  # Clear the reference to the old thread
+        else:
+            print("GUI: Нет активного потока камеры для остановки.")
 
     def _update_main_container_style(self):
         """Обновляет стиль main_container_widget в зависимости от состояния окна."""
@@ -1230,6 +1288,8 @@ class CameraWindow(QWidget):
 
     def quit_app(self):
         """Полностью закрывает приложение и освобождает ресурсы."""
+        # Останавливаем поток камеры перед выходом из приложения
+        self.stop_camera_thread()
         self.settings.setValue("geometry", self.saveGeometry())
         self.settings.setValue("minimizedToTray", False)
         QApplication.instance().quit()
@@ -1312,15 +1372,8 @@ def start_gui():
 
     virtual_camera.set_status_callback(window.status_handler.on_status_change)
 
-    def run_virtual_camera_asyncio():
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(virtual_camera.start_frame_sending_loop())
-        loop.close()
-
-    camera_thread = threading.Thread(target=run_virtual_camera_asyncio)
-    camera_thread.daemon = True
-    camera_thread.start()
+    # Изначальный запуск потока камеры
+    window.start_camera_thread()
 
     sys.exit(app.exec_())
 
@@ -1332,6 +1385,7 @@ if __name__ == '__main__':
     create_placeholder_images_for_gui()
     print(
         "\nИнициализация виртуальной камеры (предварительная загрузка всех аватаров и фонов) при прямом запуске gui_elements.py...")
+    # Инициализация виртуальной камеры без запуска цикла здесь
     virtual_camera.initialize_virtual_camera()
     print("Виртуальная камера инициализирована, ресурсы загружены.")
     start_gui()
