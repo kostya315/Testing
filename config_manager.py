@@ -24,8 +24,6 @@ def load_config():
         try:
             with open(user_config_file_path, 'w', encoding='utf-8') as f:
                 f.write("CAM_FPS=60\n")  # Стандартное значение CAM_FPS
-                f.write("CAM_WIDTH=640\n")  # Добавлено: Ширина камеры
-                f.write("CAM_HEIGHT=360\n")  # Добавлено: Высота камеры
                 f.write("CROSS_FADE_ENABLED=True\n")
                 f.write("CROSS_FADE_DURATION_MS=200\n")
                 f.write("BOUNCING_ENABLED=True\n")
@@ -50,12 +48,6 @@ def load_config():
         updated = False
         if 'CAM_FPS' not in config_data:
             config_data['CAM_FPS'] = '60'
-            updated = True
-        if 'CAM_WIDTH' not in config_data:  # Добавлена проверка
-            config_data['CAM_WIDTH'] = '640'
-            updated = True
-        if 'CAM_HEIGHT' not in config_data:  # Добавлена проверка
-            config_data['CAM_HEIGHT'] = '360'
             updated = True
         if 'CROSS_FADE_ENABLED' not in config_data:
             config_data['CROSS_FADE_ENABLED'] = 'True'
@@ -84,7 +76,7 @@ def load_config():
             with open(user_config_file_path, 'w', encoding='utf-8') as f:
                 for key, value in config_data.items():
                     # Проверяем, что ключ является пользовательской настройкой
-                    if key in ['CAM_FPS', 'CAM_WIDTH', 'CAM_HEIGHT', 'CROSS_FADE_ENABLED', 'BOUNCING_ENABLED',
+                    if key in ['CAM_FPS', 'CROSS_FADE_ENABLED', 'BOUNCING_ENABLED',
                                'CROSS_FADE_DURATION_MS', 'RESET_ANIMATION_ON_STATUS_CHANGE',
                                'INSTANT_TALK_TRANSITION', 'DIM_ENABLED', 'DIM_PERCENTAGE']:
                         f.write(f"{key}={value}\n")
@@ -162,9 +154,10 @@ def save_config(config_data):
 
     # Разделение данных по файлам
     for key, value in config_data.items():
-        if key in ['CAM_FPS', 'CAM_WIDTH', 'CAM_HEIGHT', 'CROSS_FADE_ENABLED', 'BOUNCING_ENABLED',
+        # Удалены 'CAM_WIDTH', 'CAM_HEIGHT', 'USE_BG_RESOLUTION'
+        if key in ['CAM_FPS', 'CROSS_FADE_ENABLED', 'BOUNCING_ENABLED',
                    'CROSS_FADE_DURATION_MS', 'RESET_ANIMATION_ON_STATUS_CHANGE', 'INSTANT_TALK_TRANSITION',
-                   'DIM_ENABLED', 'DIM_PERCENTAGE']:  # Добавлены новые поля
+                   'DIM_ENABLED', 'DIM_PERCENTAGE']:
             user_data_to_save[key] = value
         else:  # Все остальные настройки идут в app_config
             app_data_to_save[key] = value

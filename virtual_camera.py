@@ -12,8 +12,15 @@ import math  # Для math.sin() - для плавности анимации
 
 # Импортируем config_manager
 import config_manager
-# Импортируем POLLING_INTERVAL_SECONDS из reactive_monitor
-from reactive_monitor import POLLING_INTERVAL_SECONDS
+# Импортируем POLLING_INTERVAL_SECONDS из reactive_monitor (если используется для asyncio.sleep)
+# Предполагается, что reactive_monitor также импортируется в других местах, и POLLING_INTERVAL_SECONDS нужен.
+try:
+    from reactive_monitor import POLLING_INTERVAL_SECONDS
+except ImportError:
+    # Заглушка, если reactive_monitor или POLLING_INTERVAL_SECONDS недоступны
+    POLLING_INTERVAL_SECONDS = 0.05
+    print("ПРЕДУПРЕЖДЕНИЕ: Не удалось импортировать POLLING_INTERVAL_SECONDS из reactive_monitor. Использовано значение по умолчанию (0.05).")
+
 
 # --- КОНФИГУРАЦИЯ ПУТЕЙ ---
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -21,7 +28,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 # Это папка, с которой работает пользователь.
 AVATAR_ASSETS_FOLDER = os.path.join(SCRIPT_DIR, "reactive_avatar")
 
-# Глобальные переменные для размеров и FPS камеры (размеры будут определены динамически)
+# Глобальные переменные для размеров и FPS камеры (размеры будут определены динамически размерами BG.png/gif)
 CAM_WIDTH = 0
 CAM_HEIGHT = 0
 # CAM_FPS будет установлен из конфига, по умолчанию 60
@@ -52,7 +59,7 @@ _current_background_frame_index = 0  # Целочисленный индекс (
 _current_background_frame_float_index = 0.0  # Плавающий индекс для точного воспроизведения GIF фона
 
 # Текущий активный набор кадров аватара (устанавливается voice_status_callback)
-# Теперь это будет словарь: {"frames": [...], "original_fps": X, "current_float_inсdex": 0.0}
+# Теперь это будет словарь: {"frames": [...], "original_fps": X, "current_float_index": 0.0}
 _current_active_avatar_frames = {}
 # Добавляем блокировку для потокобезопасного доступа к _current_active_avatar_frames
 _avatar_frames_lock = threading.Lock()
@@ -93,6 +100,9 @@ DIM_PERCENTAGE = 50  # По умолчанию затемнение на 50%
 # Добавляем переменную для отслеживания последнего известного статуса голоса
 _last_known_voice_status = None
 
+# New global flag to signal GUI that camera parameters changed and it needs restart
+_camera_needs_restart = False
+
 # Карта статусов на базовые имена файлов в AVATAR_ASSETS_FOLDER (без расширения)
 STATUS_TO_FILENAME_MAP = {
     "Говорит": "Speaking",
@@ -104,16 +114,8 @@ STATUS_TO_FILENAME_MAP = {
     "Элемент статуса голоса не найден.": "Inactive"  # Использовать неактивное
 }
 
-# Базовое имя для фонового изображения (изменено по запросу пользователя)
+# Базовое имя для фонового изображения
 BACKGROUND_IMAGE_PATH = "BG"
-
-# New global flag to signal GUI that camera parameters changed and it needs restart
-_camera_needs_restart = False
-
-# Новые глобальные переменные для хранения рассчитанного BG 16:9 разрешения
-_bg_16_9_width = 0
-_bg_16_9_height = 0
-_use_bg_resolution = False  # Новая глобальная переменная для настройки использования BG разрешения
 
 
 def set_status_callback(callback_func):
@@ -127,8 +129,10 @@ def _load_frames_from_file(base_name: str, is_avatar: bool = False):
     Загружает кадры из GIF или PNG файла.
     Пытается загрузить GIF, если не найдет, то PNG.
     Возвращает список NumPy массивов (RGBA для аватаров, RGB для фона) и оригинальный FPS.
-    Также, если это фоновое изображение, рассчитывает и сохраняет его 16:9 разрешение.
+    Если это фоновое изображение, устанавливает глобальные CAM_WIDTH и CAM_HEIGHT.
     """
+    global CAM_WIDTH, CAM_HEIGHT
+
     gif_path = os.path.join(AVATAR_ASSETS_FOLDER, f"{base_name}.gif")
     png_path = os.path.join(AVATAR_ASSETS_FOLDER, f"{base_name}.png")
     frames = []
@@ -148,8 +152,14 @@ def _load_frames_from_file(base_name: str, is_avatar: bool = False):
         return [], original_fps
 
     try:
-        if file_to_load.endswith(".gif"):
-            with Image.open(file_to_load) as im:
+        with Image.open(file_to_load) as im:
+            # Устанавливаем CAM_WIDTH и CAM_HEIGHT на основе первого кадра фона
+            if base_name == BACKGROUND_IMAGE_PATH:
+                CAM_WIDTH = im.width
+                CAM_HEIGHT = im.height
+                print(f"  Разрешение камеры установлено по фоновому изображению: {CAM_WIDTH}x{CAM_HEIGHT}")
+
+            if file_to_load.endswith(".gif"):
                 for frame in ImageSequence.Iterator(im):
                     frames.append(np.array(frame.convert("RGBA" if is_avatar else "RGB")))
 
@@ -161,26 +171,7 @@ def _load_frames_from_file(base_name: str, is_avatar: bool = False):
                 else:
                     original_fps = 1.0
 
-        else:  # PNG (статичное изображение)
-            with Image.open(file_to_load) as im:
-                if base_name == BACKGROUND_IMAGE_PATH:  # Если это фоновое изображение
-                    global _bg_16_9_width, _bg_16_9_height
-                    original_bg_width, original_bg_height = im.width, im.height
-
-                    desired_aspect_ratio = 16 / 9
-                    current_aspect_ratio = original_bg_width / original_bg_height
-
-                    if current_aspect_ratio > desired_aspect_ratio:
-                        # Фон шире 16:9, новая ширина будет основываться на высоте
-                        _bg_16_9_height = original_bg_height
-                        _bg_16_9_width = int(original_bg_height * desired_aspect_ratio)
-                    else:
-                        # Фон выше или равен 16:9, новая высота основывается на ширине
-                        _bg_16_9_width = original_bg_width
-                        _bg_16_9_height = int(original_bg_width / desired_aspect_ratio)
-
-                    print(f"  Рассчитанное разрешение BG (16:9): {_bg_16_9_width}x{_bg_16_9_height}")
-
+            else:  # PNG (статичное изображение)
                 frames.append(np.array(im.convert("RGBA" if is_avatar else "RGB")))
                 original_fps = 1.0
 
@@ -194,6 +185,7 @@ def _load_frames_from_file(base_name: str, is_avatar: bool = False):
 def initialize_virtual_camera():
     """
     Инициализирует объект виртуальной камеры pyvirtualcam и предварительно загружает все изображения.
+    Размеры камеры теперь определяются размерами фонового изображения BG.png/gif.
     Эта функция предназначена для вызова из gui_elements.py.
     """
     global virtual_cam_obj, CAM_WIDTH, CAM_HEIGHT, CAM_FPS
@@ -201,7 +193,6 @@ def initialize_virtual_camera():
     global _bouncing_enabled, _current_background_frame_float_index
     global _cross_fade_enabled, CROSS_FADE_DURATION_MS, _reset_animation_on_status_change, _instant_talk_transition
     global _dim_enabled, DIM_PERCENTAGE
-    global _use_bg_resolution  # Новая глобальная переменная
 
     # Close existing camera if it's active before re-initializing
     if virtual_cam_obj is not None and virtual_cam_obj is not False:
@@ -222,7 +213,6 @@ def initialize_virtual_camera():
     _reset_animation_on_status_change = config.get('RESET_ANIMATION_ON_STATUS_CHANGE', 'True').lower() == 'true'
     _instant_talk_transition = config.get('INSTANT_TALK_TRANSITION', 'True').lower() == 'true'
     _dim_enabled = config.get('DIM_ENABLED', 'True').lower() == 'true'
-    _use_bg_resolution = config.get('USE_BG_RESOLUTION', 'False').lower() == 'true'  # Загружаем новую настройку
 
     try:
         dim_percentage_from_config = int(config.get('DIM_PERCENTAGE', '50'))
@@ -236,7 +226,8 @@ def initialize_virtual_camera():
     except ValueError:
         CAM_FPS = _initial_cam_fps_default
 
-    # Загружаем фон и аватары первыми, чтобы _bg_16_9_width/_bg_16_9_height были рассчитаны
+    # Загружаем фон и аватары первыми.
+    # CAM_WIDTH и CAM_HEIGHT будут установлены функцией _load_frames_from_file при загрузке BG.
     _background_frames_list, _original_background_fps = _load_frames_from_file(BACKGROUND_IMAGE_PATH, is_avatar=False)
     if not _background_frames_list:
         print("КРИТИЧЕСКАЯ ОШИБКА: Не удалось загрузить фоновое изображение. Не могу инициализировать камеру.")
@@ -250,29 +241,11 @@ def initialize_virtual_camera():
         if not frames:
             print(f"ПРЕДУПРЕЖДЕНИЕ: Не удалось загрузить аватар для статуса '{status}'. Использую пустой набор кадров.")
 
-    # Устанавливаем CAM_WIDTH и CAM_HEIGHT в зависимости от USE_BG_RESOLUTION
-    if _use_bg_resolution and _bg_16_9_width > 0 and _bg_16_9_height > 0:
-        CAM_WIDTH = _bg_16_9_width
-        CAM_HEIGHT = _bg_16_9_height
-        print(f"  Использую разрешение фона (16:9): {CAM_WIDTH}x{CAM_HEIGHT}")
-    else:
-        try:
-            CAM_WIDTH_from_config = int(config.get('CAM_WIDTH', '640'))
-            CAM_HEIGHT_from_config = int(config.get('CAM_HEIGHT', '360'))
-            if CAM_WIDTH_from_config <= 0 or CAM_HEIGHT_from_config <= 0:
-                print(
-                    f"ПРЕДУПРЕЖДЕНИЕ: Недопустимые значения CAM_WIDTH/CAM_HEIGHT в конфиге: {CAM_WIDTH_from_config}x{CAM_HEIGHT_from_config}. Использовано стандартное разрешение: 640x360.")
-                CAM_WIDTH = 640
-                CAM_HEIGHT = 360
-            else:
-                CAM_WIDTH = CAM_WIDTH_from_config
-                CAM_HEIGHT = CAM_HEIGHT_from_config
-        except ValueError:
-            print(
-                f"ПРЕДУПРЕЖДЕНИЕ: Некорректный формат CAM_WIDTH/CAM_HEIGHT в конфиге. Использовано стандартное разрешение: 640x360.")
-            CAM_WIDTH = 640
-            CAM_HEIGHT = 360
-        print(f"  Использую пользовательское разрешение: {CAM_WIDTH}x{CAM_HEIGHT}")
+    # Проверка, что CAM_WIDTH и CAM_HEIGHT были установлены
+    if CAM_WIDTH == 0 or CAM_HEIGHT == 0:
+        print("КРИТИЧЕСКАЯ ОШИБКА: Размеры камеры не были определены из фонового изображения. Использую стандартное разрешение 640x360.")
+        CAM_WIDTH = 640
+        CAM_HEIGHT = 360
 
     try:
         fade_duration_from_config = int(config.get('CROSS_FADE_DURATION_MS', str(_initial_cross_fade_duration_default)))
@@ -331,12 +304,11 @@ def update_camera_parameters():
     global _reset_animation_on_status_change, _instant_talk_transition
     global _dim_enabled, DIM_PERCENTAGE
     global _camera_needs_restart  # New flag
-    global _use_bg_resolution  # Новая глобальная переменная
 
     print("\n--- Обновление параметров виртуальной камеры в рантайме (только глобальные переменные) ---")
 
-    old_cam_width = CAM_WIDTH
-    old_cam_height = CAM_HEIGHT
+    # old_cam_width и old_cam_height не нужны для сравнения, так как они не могут измениться без перезапуска
+    # virtual_camera.initialize_virtual_camera(), которая их устанавливает из BG.
     old_cam_fps = CAM_FPS
 
     config = config_manager.load_config()
@@ -347,7 +319,6 @@ def update_camera_parameters():
     _reset_animation_on_status_change = config.get('RESET_ANIMATION_ON_STATUS_CHANGE', 'True').lower() == 'true'
     _instant_talk_transition = config.get('INSTANT_TALK_TRANSITION', 'True').lower() == 'true'
     _dim_enabled = config.get('DIM_ENABLED', 'True').lower() == 'true'
-    _use_bg_resolution = config.get('USE_BG_RESOLUTION', 'False').lower() == 'true'  # Загружаем новую настройку
 
     try:
         dim_percentage_from_config = int(config.get('DIM_PERCENTAGE', '50'))
@@ -361,29 +332,10 @@ def update_camera_parameters():
     except ValueError:
         CAM_FPS = _initial_cam_fps_default
 
-    # Устанавливаем CAM_WIDTH и CAM_HEIGHT в зависимости от USE_BG_RESOLUTION
-    if _use_bg_resolution and _bg_16_9_width > 0 and _bg_16_9_height > 0:
-        CAM_WIDTH = _bg_16_9_width
-        CAM_HEIGHT = _bg_16_9_height
-        print(f"  Использую разрешение фона (16:9): {CAM_WIDTH}x{CAM_HEIGHT}")
-    else:
-        try:
-            CAM_WIDTH_from_config = int(config.get('CAM_WIDTH', '640'))
-            CAM_HEIGHT_from_config = int(config.get('CAM_HEIGHT', '360'))
-            if CAM_WIDTH_from_config <= 0 or CAM_HEIGHT_from_config <= 0:
-                print(
-                    f"ПРЕДУПРЕЖДЕНИЕ: Недопустимые значения CAM_WIDTH/CAM_HEIGHT в конфиге: {CAM_WIDTH_from_config}x{CAM_HEIGHT_from_config}. Использовано стандартное разрешение: 640x360.")
-                CAM_WIDTH = 640
-                CAM_HEIGHT = 360
-            else:
-                CAM_WIDTH = CAM_WIDTH_from_config
-                CAM_HEIGHT = CAM_HEIGHT_from_config
-        except ValueError:
-            print(
-                f"ПРЕДУПРЕЖДЕНИЕ: Некорректный формат CAM_WIDTH/CAM_HEIGHT в конфиге. Использовано стандартное разрешение: 640x360.")
-            CAM_WIDTH = 640
-            CAM_HEIGHT = 360
-        print(f"  Использую пользовательское разрешение: {CAM_WIDTH}x{CAM_HEIGHT}")
+    # CAM_WIDTH и CAM_HEIGHT не обновляются здесь из конфига, они устанавливаются initialize_virtual_camera
+    # на основе фонового изображения.
+    print(f"  Разрешение камеры остается: {CAM_WIDTH}x{CAM_HEIGHT}")
+
 
     try:
         fade_duration_from_config = int(config.get('CROSS_FADE_DURATION_MS', str(_initial_cross_fade_duration_default)))
@@ -391,15 +343,13 @@ def update_camera_parameters():
     except ValueError:
         CROSS_FADE_DURATION_MS = _initial_cross_fade_duration_default
 
-    # Set flag if critical camera parameters changed
-    if (old_cam_width != CAM_WIDTH or
-            old_cam_height != CAM_HEIGHT or
-            old_cam_fps != CAM_FPS):
+    # Set flag if critical camera parameters changed (only FPS matters now)
+    if old_cam_fps != CAM_FPS:
         _camera_needs_restart = True
-        print("Параметры камеры (разрешение или FPS) изменились. Сигнализирую GUI о необходимости перезапуска камеры.")
+        print("Параметры камеры (FPS) изменились. Сигнализирую GUI о необходимости перезапуска камеры.")
     else:
         _camera_needs_restart = False
-        print("Параметры камеры (разрешение, FPS) не изменились. Обновлены только внутренние настройки анимации.")
+        print("Параметры камеры (FPS) не изменились. Обновлены только внутренние настройки анимации.")
 
     print("Параметры виртуальной камеры и настройки анимации успешно обновлены (только глобальные).")
 
@@ -418,19 +368,18 @@ def reset_camera_needs_restart_flag():
 
 def get_calculated_bg_16_9_resolution():
     """
-    Возвращает рассчитанное разрешение фона с соотношением сторон 16:9.
-    Должно быть вызвано после initialize_virtual_camera(), чтобы значения были доступны.
+    Возвращает текущие CAM_WIDTH и CAM_HEIGHT, которые теперь напрямую отражают размеры BG.
+    Это заглушка, чтобы GUI не ломался при попытке получить 16:9 разрешение.
     """
-    global _bg_16_9_width, _bg_16_9_height
-    return (_bg_16_9_width, _bg_16_9_height)
+    global CAM_WIDTH, CAM_HEIGHT
+    return (CAM_WIDTH, CAM_HEIGHT)
 
 
 def _compose_frame(background_frame_rgb: np.ndarray, avatar_rgba_image: np.ndarray | None,
                    y_offset_addition: int = 0) -> np.ndarray:
     """
     Композирует текущий кадр фона и заданное RGBA изображение аватара, применяя опциональное смещение по Y.
-    Масштабирует фон так, чтобы его высота соответствовала CAM_HEIGHT.
-    Если фон шире целевого соотношения сторон, обрезает его по краям.
+    Фон масштабируется точно до CAM_WIDTH и CAM_HEIGHT (без сохранения соотношения сторон).
     Возвращает NumPy массив RGB для отправки в виртуальную камеру.
     background_frame_rgb: RGB NumPy массив фонового кадра.
     avatar_rgba_image: RGBA NumPy массив изображения аватара, или None, если аватара нет.
@@ -441,54 +390,17 @@ def _compose_frame(background_frame_rgb: np.ndarray, avatar_rgba_image: np.ndarr
     if background_frame_rgb is None or CAM_WIDTH == 0 or CAM_HEIGHT == 0:
         return np.zeros((CAM_HEIGHT, CAM_WIDTH, 3), dtype=np.uint8)
 
-    # Высота выходного кадра виртуальной камеры
-    output_height = CAM_HEIGHT
-    # Ширина выходного кадра виртуальной камеры
-    output_width = CAM_WIDTH
+    # Непосредственное масштабирование фона до размеров камеры.
+    # Это приведет к растягиванию или сжатию, если соотношение сторон фона не совпадает с CAM_WIDTH/CAM_HEIGHT.
+    output_frame = cv2.resize(background_frame_rgb, (CAM_WIDTH, CAM_HEIGHT), interpolation=cv2.INTER_LINEAR)
 
-    # Получаем исходные размеры фонового изображения
-    bg_height, bg_width, _ = background_frame_rgb.shape
-
-    # Рассчитываем новую ширину для масштабирования, сохраняя соотношение сторон
-    aspect_ratio_bg = bg_width / bg_height
-    target_scaled_width = int(output_height * aspect_ratio_bg)
-
-    # ИЗМЕНЕНИЕ: Используем cv2.INTER_LINEAR для масштабирования фона
-    background_scaled = cv2.resize(background_frame_rgb, (target_scaled_width, output_height),
-                                   interpolation=cv2.INTER_LINEAR)
-
-    # Создаем черный фон для выходного кадра
-    output_frame = np.zeros((output_height, output_width, 3), dtype=np.uint8)
-
-    if target_scaled_width > output_width:
-        # Обрезать по ширине
-        crop_x_start = (target_scaled_width - output_width) // 2
-        # Убедимся, что обрезка не выходит за границы
-        crop_x_end = crop_x_start + output_width
-        if crop_x_end > background_scaled.shape[1]:  # Если конец обрезки выходит за границы, корректируем начало
-            crop_x_start = background_scaled.shape[1] - output_width
-            if crop_x_start < 0:  # Если фон слишком узкий, центрируем и не обрезаем
-                crop_x_start = 0
-
-        # Убедимся, что crop_x_start не отрицательный
-        crop_x_start = max(0, crop_x_start)
-
-        background_final_cropped = background_scaled[:, crop_x_start: crop_x_start + output_width]
-        output_frame = background_final_cropped
-    else:
-        # Центрировать и добавить черные полосы по бокам
-        paste_x_start = (output_width - target_scaled_width) // 2
-        output_frame[:, paste_x_start: paste_x_start + target_scaled_width] = background_scaled
-
-    # output_frame теперь содержит обработанный фон (масштабированный и обрезанный/с полосами)
-    # Далее накладываем аватар на этот output_frame
-
+    # Остальная логика наложения аватара остается прежней
     if avatar_rgba_image is None or avatar_rgba_image.shape[0] == 0 or avatar_rgba_image.shape[1] == 0:
         return output_frame
 
     avatar_height, avatar_width, _ = avatar_rgba_image.shape
-    # Максимальный размер аватара относительно ВЫСОТЫ камеры
-    max_avatar_dim = min(output_width, output_height) * 0.7  # Используем output_width/height
+    # Максимальный размер аватара относительно ВЫСОТЫ/ШИРИНЫ камеры
+    max_avatar_dim = min(CAM_WIDTH, CAM_HEIGHT) * 0.7
 
     if avatar_width > 0 and avatar_height > 0:
         scale_factor = min(max_avatar_dim / avatar_width, max_avatar_dim / avatar_height)
@@ -501,12 +413,12 @@ def _compose_frame(background_frame_rgb: np.ndarray, avatar_rgba_image: np.ndarr
     if new_avatar_w <= 0 or new_avatar_h <= 0:
         return output_frame
 
-    # ИЗМЕНЕНИЕ: Используем cv2.INTER_LINEAR для масштабирования аватара
+    # Используем cv2.INTER_LINEAR для масштабирования аватара
     avatar_resized = cv2.resize(avatar_rgba_image, (new_avatar_w, new_avatar_h), interpolation=cv2.INTER_LINEAR)
 
-    # Центрируем аватар относительно output_width/height
-    x_offset = (output_width - new_avatar_w) // 2
-    y_offset = int((output_height - new_avatar_h) // 2 + y_offset_addition)
+    # Центрируем аватар относительно CAM_WIDTH/CAM_HEIGHT
+    x_offset = (CAM_WIDTH - new_avatar_w) // 2
+    y_offset = int((CAM_HEIGHT - new_avatar_h) // 2 + y_offset_addition)
 
     avatar_rgb_float = avatar_resized[:, :, :3].astype(np.float32)
     alpha_channel_float = avatar_resized[:, :, 3].astype(np.float32) / 255.0
@@ -515,8 +427,8 @@ def _compose_frame(background_frame_rgb: np.ndarray, avatar_rgba_image: np.ndarr
     y1, y2 = y_offset, y_offset + new_avatar_h
     x1, x2 = x_offset, x_offset + new_avatar_w
 
-    y2_clip = min(y2, output_height)
-    x2_clip = min(x2, output_width)
+    y2_clip = min(y2, CAM_HEIGHT)
+    x2_clip = min(x2, CAM_WIDTH)
     y1_clip = max(0, y1)
     x1_clip = max(0, x1)
 
@@ -556,11 +468,11 @@ def get_static_preview_frame(current_status: str) -> np.ndarray:
     """
     global _background_frames_list, CAM_WIDTH, CAM_HEIGHT, _avatar_frames_map
 
-    # Используем CAM_WIDTH и CAM_HEIGHT, так как _compose_frame уже обработает масштабирование и обрезку
+    # Используем CAM_WIDTH и CAM_HEIGHT, так как _compose_frame уже обработает масштабирование
     if not _background_frames_list or CAM_WIDTH == 0 or CAM_HEIGHT == 0:
         print(
             "ПРЕДУПРЕЖДЕНИЕ (get_static_preview_frame): Фон не загружен или размеры камеры не определены. Возвращаю пустой кадр.")
-        return np.zeros((360, 640, 3), dtype=np.uint8)  # Используем GUI_PREVIEW_HEIGHT, GUI_PREVIEW_WIDTH для заглушки
+        return np.zeros((360, 640, 3), dtype=np.uint8)
 
     avatar_data_for_preview = _avatar_frames_map.get(current_status,
                                                      {"frames": [], "original_fps": 1.0, "current_float_index": 0.0})
@@ -605,6 +517,12 @@ async def start_frame_sending_loop():
                 current_bounce_offset = -BOUNCING_MAX_OFFSET_PIXELS * math.sin(progress * math.pi)
 
         try:
+            # Если камера не была успешно инициализирована или была отключена, пауза и продолжение
+            if virtual_cam_obj is False or virtual_cam_obj is None:
+                # print("ПРЕДУПРЕЖДЕНИЕ: Виртуальная камера не активна. Кадры не отправляются.")
+                await asyncio.sleep(POLLING_INTERVAL_SECONDS)  # Пауза, чтобы не нагружать ЦПУ
+                continue  # Продолжаем цикл, ожидая, что камера может быть инициализирована позже
+
             final_avatar_image_rgba = None
 
             with _avatar_frames_lock:
@@ -634,6 +552,7 @@ async def start_frame_sending_loop():
                 # Получаем текущий плавающий индекс из данных аватара
                 current_avatar_float_index_for_use = current_avatar_data.get('current_float_index', 0.0)
 
+
                 if current_avatar_frames_list:
                     # Убедимся, что current_original_avatar_fps не равен нулю
                     effective_original_avatar_fps = current_original_avatar_fps if current_original_avatar_fps > 0 else 1.0
@@ -646,6 +565,7 @@ async def start_frame_sending_loop():
                     current_avatar_rgba = current_avatar_frames_list[avatar_idx_to_use_current].copy()
                 else:
                     current_avatar_rgba = np.zeros((CAM_HEIGHT, CAM_WIDTH, 4), dtype=np.uint8)
+
 
                 if _cross_fade_active and _cross_fade_enabled:
                     elapsed_ms_fade = (time.time() - _cross_fade_start_time) * 1000
@@ -704,14 +624,9 @@ async def start_frame_sending_loop():
                 # Применяем затемнение только к RGB каналам, альфа-канал оставляем неизменным
                 final_avatar_image_rgba[:, :, :3] = (final_avatar_image_rgba[:, :, :3] * dim_factor).astype(np.uint8)
 
+
             composed_frame_rgb = _compose_frame(background_frame_to_composite, final_avatar_image_rgba,
                                                 y_offset_addition=current_bounce_offset)
-
-            # Если камера не была успешно инициализирована или была отключена, пропускаем отправку
-            if virtual_cam_obj is False or virtual_cam_obj is None:
-                # print("ПРЕДУПРЕЖДЕНИЕ: Виртуальная камера не активна. Кадры не отправляются.")
-                await asyncio.sleep(POLLING_INTERVAL_SECONDS)  # Пауза, чтобы не нагружать ЦПУ
-                continue  # Продолжаем цикл, ожидая, что камера может быть инициализирована позже
 
             if composed_frame_rgb is not None:
                 try:
@@ -726,12 +641,8 @@ async def start_frame_sending_loop():
                         pass
                 except Exception as e:
                     print(f"ОШИБКА отправки кадра в виртуальную камеру или GUI: {e}")
-                    # При ошибке отправки кадра, помечаем камеру как неактивную
                     virtual_cam_obj = False
-                    # Не останавливаем цикл, просто пропускаем текущий кадр и ждем следующего.
-                    # GUI должен обнаружить, что камера неактивна, и попытаться ее реинициализировать.
             else:
-                # Если композитный кадр пуст, отправляем просто фоновый кадр
                 virtual_cam_obj.send(background_frame_to_composite)
                 virtual_cam_obj.sleep_until_next_frame()
                 try:
@@ -743,7 +654,7 @@ async def start_frame_sending_loop():
 
         except Exception as e:
             print(f"ОШИБКА в цикле генерации кадров: {e}")
-            await asyncio.sleep(1)
+            await asyncio.sleep(POLLING_INTERVAL_SECONDS) # Используем POLLING_INTERVAL_SECONDS
 
 
 def voice_status_callback(status_message: str, debug_message: str):
@@ -786,7 +697,8 @@ def voice_status_callback(status_message: str, debug_message: str):
 
             # Применяем логику сброса/продолжения анимации для НОВОГО активного аватара
             # Если это мгновенный переход на "Говорит" или сброс включен, сбрасываем индекс
-            if (_instant_talk_transition and status_message == "Говорит") or _reset_animation_on_status_change:
+            if (
+                    _instant_talk_transition and status_message == "Говорит") or _reset_animation_on_status_change:
                 _current_active_avatar_frames['current_float_index'] = 0.0
                 # else: если RESET_ANIMATION_ON_STATUS_CHANGE False,
             # new_active_avatar_data['current_float_index'] сохраняет свое предыдущее значение для этого статуса.
