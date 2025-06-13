@@ -51,6 +51,9 @@ _background_frames_list = []  # Список NumPy массивов (RGB) для
 _original_background_fps = CAM_FPS  # Оригинальный FPS фона
 # _avatar_frames_map теперь будет хранить словари: "статус" -> {"frames": [...], "original_fps": X, "current_float_index": 0.0}
 _avatar_frames_map = {}
+_last_composed_frame = None
+_last_bg_index = -1
+_last_avatar_index = -1
 
 # Индексы текущих кадров для анимации (теперь будут храниться внутри _avatar_frames_map)
 _current_avatar_frame_index = 0  # Сохраняется для совместимости/отладки
@@ -117,6 +120,7 @@ STATUS_TO_FILENAME_MAP = {
 # Базовое имя для фонового изображения
 BACKGROUND_IMAGE_PATH = "BG"
 
+CHECK_TIME = True
 
 def set_status_callback(callback_func):
     """Устанавливает функцию обратного вызова для обновления статуса."""
@@ -377,6 +381,8 @@ def get_calculated_bg_16_9_resolution():
 
 def _compose_frame(background_frame_rgb: np.ndarray, avatar_rgba_image: np.ndarray | None,
                    y_offset_addition: int = 0) -> np.ndarray:
+    import time
+    t0 = time.perf_counter()
     """
     Композирует текущий кадр фона и заданное RGBA изображение аватара, применяя опциональное смещение по Y.
     Фон масштабируется точно до CAM_WIDTH и CAM_HEIGHT (без сохранения соотношения сторон).
@@ -393,9 +399,16 @@ def _compose_frame(background_frame_rgb: np.ndarray, avatar_rgba_image: np.ndarr
     # Непосредственное масштабирование фона до размеров камеры.
     # Это приведет к растягиванию или сжатию, если соотношение сторон фона не совпадает с CAM_WIDTH/CAM_HEIGHT.
     output_frame = cv2.resize(background_frame_rgb, (CAM_WIDTH, CAM_HEIGHT), interpolation=cv2.INTER_LINEAR)
+    if CHECK_TIME:
+        t1 = time.perf_counter()
+        print(f"[ПРОФИЛЬ] Масштаб BG: {(t1 - t0)*1000:.2f} мс")
 
     # Остальная логика наложения аватара остается прежней
     if avatar_rgba_image is None or avatar_rgba_image.shape[0] == 0 or avatar_rgba_image.shape[1] == 0:
+
+        if CHECK_TIME:
+            t4 = time.perf_counter()
+            print(f"[ПРОФИЛЬ] Всего: {(t4 - t0)*1000:.2f} мс")
         return output_frame
 
     avatar_height, avatar_width, _ = avatar_rgba_image.shape
@@ -408,6 +421,9 @@ def _compose_frame(background_frame_rgb: np.ndarray, avatar_rgba_image: np.ndarr
     avatar_was_scaled = (new_avatar_w != avatar_width or new_avatar_h != avatar_height)
 
     if new_avatar_w <= 0 or new_avatar_h <= 0:
+        if CHECK_TIME:
+            t4 = time.perf_counter()
+            print(f"[ПРОФИЛЬ] Всего: {(t4 - t0)*1000:.2f} мс")
         return output_frame
 
     # Используем cv2.INTER_LINEAR для масштабирования аватара
@@ -417,9 +433,12 @@ def _compose_frame(background_frame_rgb: np.ndarray, avatar_rgba_image: np.ndarr
     # Позиционируем аватар строго в левый нижний угол
     x_offset = (CAM_WIDTH - new_avatar_w) // 2
     # Смещаем аватар ниже, если масштабирован и включено подпрыгивание
-    extra_offset = -BOUNCING_MAX_OFFSET_PIXELS if avatar_was_scaled and _bouncing_enabled else 0
-    y_offset = CAM_HEIGHT - new_avatar_h + y_offset_addition + extra_offset
+    total_bounce_range = BOUNCING_MAX_OFFSET_PIXELS if avatar_was_scaled and _bouncing_enabled else 0
+    y_offset = CAM_HEIGHT - new_avatar_h + total_bounce_range + y_offset_addition
 
+    if CHECK_TIME:
+        t2 = time.perf_counter()
+        print(f"[ПРОФИЛЬ] Подготовка аватара: {(t2 - t1)*1000:.2f} мс")
     avatar_rgb_float = avatar_resized[:, :, :3].astype(np.float32)
     alpha_channel_float = avatar_resized[:, :, 3].astype(np.float32) / 255.0
     alpha_factor_3_chan = cv2.merge([alpha_channel_float, alpha_channel_float, alpha_channel_float])
@@ -436,6 +455,9 @@ def _compose_frame(background_frame_rgb: np.ndarray, avatar_rgba_image: np.ndarr
     actual_w = x2_clip - x1_clip
 
     if actual_h <= 0 or actual_w <= 0:
+        if CHECK_TIME:
+            t4 = time.perf_counter()
+            print(f"[ПРОФИЛЬ] Всего: {(t4 - t0)*1000:.2f} мс")
         return output_frame
 
     avatar_rgb_clipped = avatar_rgb_float[
@@ -448,6 +470,9 @@ def _compose_frame(background_frame_rgb: np.ndarray, avatar_rgba_image: np.ndarr
                            ]
 
     if avatar_rgb_clipped.shape[0] == 0 or avatar_rgb_clipped.shape[1] == 0:
+        if CHECK_TIME:
+            t4 = time.perf_counter()
+            print(f"[ПРОФИЛЬ] Всего: {(t4 - t0)*1000:.2f} мс")
         return output_frame
 
     bg_roi = output_frame[y1_clip:y2_clip, x1_clip:x2_clip].astype(np.float32)
@@ -455,8 +480,14 @@ def _compose_frame(background_frame_rgb: np.ndarray, avatar_rgba_image: np.ndarr
     blended_roi = avatar_rgb_clipped * alpha_factor_clipped + \
                   bg_roi * (1 - alpha_factor_clipped)
 
+    if CHECK_TIME:
+        t3 = time.perf_counter()
+        print(f"[ПРОФИЛЬ] Blending: {(t3 - t2)*1000:.2f} мс")
     output_frame[y1_clip:y2_clip, x1_clip:x2_clip] = blended_roi.astype(np.uint8)
 
+    if CHECK_TIME:
+        t4 = time.perf_counter()
+        print(f"[ПРОФИЛЬ] Всего: {(t4 - t0)*1000:.2f} мс")
     return output_frame
 
 
