@@ -124,7 +124,7 @@ def set_status_callback(callback_func):
     _status_change_listener = callback_func
 
 
-def _load_frames_from_file(base_name: str, is_avatar: bool = False):
+def _load_frames_from_file(base_name: str, is_avatar: bool = False, resize_to_cam: bool = False) -> tuple[list[np.ndarray], float]:
     """
     Загружает кадры из GIF или PNG файла.
     Пытается загрузить GIF, если не найдет, то PNG.
@@ -228,7 +228,7 @@ def initialize_virtual_camera():
 
     # Загружаем фон и аватары первыми.
     # CAM_WIDTH и CAM_HEIGHT будут установлены функцией _load_frames_from_file при загрузке BG.
-    _background_frames_list, _original_background_fps = _load_frames_from_file(BACKGROUND_IMAGE_PATH, is_avatar=False)
+    _background_frames_list, _original_background_fps = _load_frames_from_file(BACKGROUND_IMAGE_PATH, is_avatar=False, resize_to_cam=True)
     if not _background_frames_list:
         print("КРИТИЧЕСКАЯ ОШИБКА: Не удалось загрузить фоновое изображение. Не могу инициализировать камеру.")
         virtual_cam_obj = False  # Signal failure to launch camera
@@ -402,13 +402,10 @@ def _compose_frame(background_frame_rgb: np.ndarray, avatar_rgba_image: np.ndarr
     # Максимальный размер аватара относительно ВЫСОТЫ/ШИРИНЫ камеры
     max_avatar_dim = min(CAM_WIDTH, CAM_HEIGHT) * 0.7
 
-    if avatar_width > 0 and avatar_height > 0:
-        scale_factor = min(max_avatar_dim / avatar_width, max_avatar_dim / avatar_height)
-    else:
-        scale_factor = 0
-
-    new_avatar_w = int(avatar_width * scale_factor)
-    new_avatar_h = int(avatar_height * scale_factor)
+    new_avatar_w = int(avatar_width)
+    new_avatar_h = int(avatar_height)
+    # Проверка: аватар масштабирован?
+    avatar_was_scaled = (new_avatar_w != avatar_width or new_avatar_h != avatar_height)
 
     if new_avatar_w <= 0 or new_avatar_h <= 0:
         return output_frame
@@ -417,8 +414,11 @@ def _compose_frame(background_frame_rgb: np.ndarray, avatar_rgba_image: np.ndarr
     avatar_resized = cv2.resize(avatar_rgba_image, (new_avatar_w, new_avatar_h), interpolation=cv2.INTER_LINEAR)
 
     # Центрируем аватар относительно CAM_WIDTH/CAM_HEIGHT
+    # Позиционируем аватар строго в левый нижний угол
     x_offset = (CAM_WIDTH - new_avatar_w) // 2
-    y_offset = int((CAM_HEIGHT - new_avatar_h) // 2 + y_offset_addition)
+    # Смещаем аватар ниже, если масштабирован и включено подпрыгивание
+    extra_offset = -BOUNCING_MAX_OFFSET_PIXELS if avatar_was_scaled and _bouncing_enabled else 0
+    y_offset = CAM_HEIGHT - new_avatar_h + y_offset_addition + extra_offset
 
     avatar_rgb_float = avatar_resized[:, :, :3].astype(np.float32)
     alpha_channel_float = avatar_resized[:, :, 3].astype(np.float32) / 255.0
@@ -514,7 +514,7 @@ async def start_frame_sending_loop():
                 current_bounce_offset = 0
             else:
                 progress = elapsed_ms / BOUNCING_DURATION_MS
-                current_bounce_offset = -BOUNCING_MAX_OFFSET_PIXELS * math.sin(progress * math.pi)
+                current_bounce_offset = int(-BOUNCING_MAX_OFFSET_PIXELS * math.sin(progress * math.pi))
 
         try:
             # Если камера не была успешно инициализирована или была отключена, пауза и продолжение
