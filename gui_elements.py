@@ -31,6 +31,12 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 WINDOW_TITLE = "Виртуальная Камера Reactive"
 ICON_PATH = os.path.join(SCRIPT_DIR, "app_icon.png")  # Путь к файлу иконки приложения и трея
 
+# --- Новые фиксированные размеры для области предпросмотра в GUI (изначально) ---
+# Эти размеры определяют, как будет выглядеть картинка в GUI при запуске.
+# При развертывании окна, image_label будет расширяться.
+GUI_PREVIEW_WIDTH = 640
+GUI_PREVIEW_HEIGHT = 360
+
 
 # --- Заглушки изображений ---
 def create_placeholder_images_for_gui():
@@ -60,7 +66,7 @@ def create_placeholder_images_for_gui():
     bg_path = os.path.join(virtual_camera.AVATAR_ASSETS_FOLDER, f"{virtual_camera.BACKGROUND_IMAGE_PATH}.png")
     if not os.path.exists(bg_path):
         print(f"  Создаю заглушку '{os.path.basename(bg_path)}'.")
-        placeholder_bg = np.full((480, 640, 3), 150, dtype=np.uint8)  # Серое 640x480
+        placeholder_bg = np.full((360, 640, 3), 150, dtype=np.uint8)  # Серое 640x360
         save_np_array_as_png(placeholder_bg, bg_path)
 
     # Создаем Speaking.png
@@ -151,7 +157,8 @@ class SettingsWindow(QWidget):
         'RESET_ANIMATION_ON_STATUS_CHANGE': 'True',
         'INSTANT_TALK_TRANSITION': 'True',
         'DIM_ENABLED': 'True',
-        'DIM_PERCENTAGE': '50'
+        'DIM_PERCENTAGE': '50',
+        'USE_BG_RESOLUTION': 'False'  # Новая настройка
     }
 
     def __init__(self, parent=None):
@@ -236,7 +243,7 @@ class SettingsWindow(QWidget):
             }
             QComboBox::down-arrow {
                 /* Используем простой SVG для стрелки вниз */
-                image: url(data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNiIgdmlld0JveD0iMCAwIDE2IDE2Ij48cGF0aCBmaWxsPSJ3aGl0ZSIgZD0iTTAgNWw4IDhsOC04eiIvPjwvc3ZnPg==);
+                image: url(data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNiIgdmlld0JveD0iMCAwIDE2IDE2Ij48cGF0aCBmYWxsPSJ3aGl0ZSIgZD0iTTAgNWw4IDhsOC04eiIvPjwvc3ZnPg==);
                 width: 16px;
                 height: 16px;
             }
@@ -284,6 +291,17 @@ class SettingsWindow(QWidget):
         self.config_widgets['CAM_FPS'] = self.cam_fps_input
         self.form_layout.addRow(cam_fps_label, self.cam_fps_input)
 
+        # Новая опция: Использовать разрешение фона (16:9)
+        self.use_bg_resolution_checkbox = QCheckBox("Использовать разрешение фона (16:9)")
+        self.use_bg_resolution_checkbox.setChecked(
+            self.current_config.get('USE_BG_RESOLUTION', self.DEFAULT_CONFIG['USE_BG_RESOLUTION']).lower() == 'true')
+
+        # Размещение чекбокса вправо
+        bg_res_checkbox_layout = QHBoxLayout()
+        bg_res_checkbox_layout.addStretch()
+        bg_res_checkbox_layout.addWidget(self.use_bg_resolution_checkbox)
+        self.form_layout.addRow(QLabel(""), bg_res_checkbox_layout)  # Пустой label для выравнивания
+
         # Разрешение камеры (CAM_WIDTH, CAM_HEIGHT)
         self.resolution_options = [
             (640, 360), (854, 480), (1280, 720), (1920, 1080), (3840, 2160)
@@ -297,15 +315,31 @@ class SettingsWindow(QWidget):
         current_res_h = self.current_config.get('CAM_HEIGHT', self.DEFAULT_CONFIG['CAM_HEIGHT'])
         current_res_str = f"{current_res_w}x{current_res_h}"
 
-        if current_res_str in self.resolution_names:
-            self.resolution_combo.setCurrentText(current_res_str)
-        else:
-            # Если текущее разрешение не в списке, добавляем его и выбираем
+        # Добавляем текущее разрешение, если оно не в списке стандартных
+        if current_res_str not in self.resolution_names and current_res_w != "0" and current_res_h != "0":
             self.resolution_combo.addItem(current_res_str)
-            self.resolution_combo.setCurrentText(current_res_str)
+        self.resolution_combo.setCurrentText(current_res_str)
 
-        self.config_widgets['RESOLUTION'] = self.resolution_combo
-        self.form_layout.addRow(QLabel("Разрешение Камеры:"), self.resolution_combo)
+        self.config_widgets['CAM_WIDTH'] = self.resolution_combo  # Храним combo box
+        self.config_widgets['CAM_HEIGHT'] = self.resolution_combo  # Храним combo box
+
+        # Label для отображения разрешения фона
+        self.bg_res_display_label = QLabel("Разрешение фона: Не определено")
+        # bg_res_display_label_layout = QHBoxLayout()
+        # bg_res_display_label_layout.addStretch()
+        # bg_res_display_label_layout.addWidget(self.bg_res_display_label)
+        # self.form_layout.addRow(QLabel(""), bg_res_display_label_layout) # Пустой label для выравнивания
+
+        # Группа для виджетов разрешения (combo box и label)
+        self.resolution_widget_container = QWidget()
+        self.resolution_widget_container_layout = QHBoxLayout(self.resolution_widget_container)
+        self.resolution_widget_container_layout.setContentsMargins(0, 0, 0, 0)
+        self.resolution_widget_container_layout.addWidget(self.resolution_combo)
+        self.resolution_widget_container_layout.addStretch()  # Выравнивает combo box влево
+        self.resolution_widget_container_layout.addWidget(self.bg_res_display_label)
+        self.resolution_widget_container_layout.addStretch()  # Выравнивает label вправо
+
+        self.form_layout.addRow(QLabel("Разрешение Камеры:"), self.resolution_widget_container)
 
         # Boolean параметры с чекбоксами
         bool_params_map = {
@@ -390,10 +424,39 @@ class SettingsWindow(QWidget):
 
         main_layout.addLayout(button_layout)
 
-        self.setMinimumSize(350, 400)
+        self.setFixedSize(self.sizeHint())  # Устанавливаем фиксированный размер окна настроек
 
         self.start_pos = None
         self.settings = QSettings("ReactivePlus", "VirtualCameraReactiveSettings")
+
+        # Инициализируем состояние виджетов разрешения
+        self.use_bg_resolution_checkbox.toggled.connect(self._toggle_resolution_inputs)
+        # _toggle_resolution_inputs вызывается здесь для установки начального состояния
+        self._toggle_resolution_inputs(self.use_bg_resolution_checkbox.isChecked())
+
+        # Вызываем _update_bg_resolution_display() при инициализации
+        self._update_bg_resolution_display()
+
+    def _update_bg_resolution_display(self):
+        """Обновляет текст в bg_res_display_label с актуальным разрешением фона."""
+        # Убедимся, что virtual_camera.initialize_virtual_camera() уже был вызван
+        # Это будет вызвано из CameraWindow.__init__ перед созданием SettingsWindow
+        bg_w, bg_h = virtual_camera.get_calculated_bg_16_9_resolution()
+        if bg_w > 0 and bg_h > 0:
+            self.bg_res_display_label.setText(f"Разрешение фона: {bg_w}x{bg_h} (16:9)")
+        else:
+            self.bg_res_display_label.setText("Разрешение фона: Не определено")
+
+    def _toggle_resolution_inputs(self, checked):
+        """Включает/выключает поля ввода разрешения в зависимости от чекбокса."""
+        self.resolution_combo.setEnabled(not checked)
+        if checked:
+            self.resolution_combo.hide()
+            self.bg_res_display_label.show()
+            self._update_bg_resolution_display()  # Обновляем текст при переключении
+        else:
+            self.resolution_combo.show()
+            self.bg_res_display_label.hide()
 
     def update_dim_percentage_slider_from_input(self, text):
         """Обновляет ползунок DIM_PERCENTAGE при изменении текста в поле ввода."""
@@ -421,8 +484,14 @@ class SettingsWindow(QWidget):
             event.accept()
         else:
             event.ignore()
-            QMessageBox.warning(self, "Закрытие окна",
-                                "Пожалуйста, используйте кнопку 'Закрыть' для выхода из настроек.")
+            # Улучшена читаемость QMessageBox
+            msg_box = QMessageBox(self)
+            msg_box.setWindowTitle("Закрытие окна")
+            msg_box.setText("Пожалуйста, используйте кнопку 'Закрыть' для выхода из настроек.")
+            msg_box.setIcon(QMessageBox.Warning)
+            msg_box.setStyleSheet(
+                "QMessageBox { background-color: #1a1a1a; color: #ffffff; } QLabel { color: #ffffff; } QPushButton { background-color: #007bff; color: #ffffff; border-radius: 5px; padding: 5px 10px; } QPushButton:hover { background-color: #0056b3; }")
+            msg_box.exec_()
             self._closing_via_button = False  # Сбрасываем флаг на всякий случай
 
     def load_settings_into_gui(self, config_data):
@@ -433,12 +502,16 @@ class SettingsWindow(QWidget):
         current_res_h = config_data.get('CAM_HEIGHT', self.DEFAULT_CONFIG['CAM_HEIGHT'])
         current_res_str = f"{current_res_w}x{current_res_h}"
         # If the resolution from config_data is not in the predefined list, add it first.
-        if current_res_str not in self.resolution_names:
+        if current_res_str not in self.resolution_names and current_res_w != "0" and current_res_h != "0":
             # Temporarily add it if it's not a default, to allow setting it.
-            self.resolution_combo.addItem(current_res_str)
+            if self.resolution_combo.findText(current_res_str) == -1:  # Проверяем, чтобы не добавить дубликат
+                self.resolution_combo.addItem(current_res_str)
         self.resolution_combo.setCurrentText(current_res_str)
-        # Optional: remove the dynamically added item if it's not a real option after setting
-        # This part is omitted for simplicity, as the problem implies valid resolutions.
+
+        # Обновляем состояние чекбокса и виджетов разрешения
+        self.use_bg_resolution_checkbox.setChecked(
+            config_data.get('USE_BG_RESOLUTION', self.DEFAULT_CONFIG['USE_BG_RESOLUTION']).lower() == 'true')
+        self._toggle_resolution_inputs(self.use_bg_resolution_checkbox.isChecked())
 
         bool_params_map = {
             'CROSS_FADE_ENABLED': 'Включить плавный переход:',
@@ -523,7 +596,9 @@ class SettingsWindow(QWidget):
         pos_top_x_centered = parent_rect.center().x() - self_rect.width() // 2
         pos_top_y = parent_rect.top() - self_rect.height() - 10
         if is_parent_mostly_off_bottom and pos_top_y >= screen_geo.top():
-            candidate_positions.append({'x': pos_top_x_centered, 'y': pos_top_y, 'side': 'top'})
+            candidate_positions.append({'x': pos_top_x_centered, 'y': y_aligned_with_parent, 'side': 'top'})
+            # Ensure the top position is within screen bounds
+            candidate_positions[-1]['y'] = max(screen_geo.top(), candidate_positions[-1]['y'])
 
         pos_bottom_x_centered = parent_rect.center().x() - self_rect.width() // 2
         pos_bottom_y = parent_rect.bottom() + 10
@@ -551,11 +626,10 @@ class SettingsWindow(QWidget):
                 if not best_candidate:
                     for cand in candidate_positions:
                         if cand['side'] in ['top', 'bottom']:
-                            if cand['side'] == 'top' and pos_top_y >= screen_geo.top():
+                            if cand['side'] == 'top' and cand['y'] >= screen_geo.top():
                                 best_candidate = cand
                                 break
-                            elif cand['side'] == 'bottom' and (
-                                    pos_bottom_y + self_rect.height()) <= screen_geo.bottom():
+                            elif cand['side'] == 'bottom' and (cand['y'] + self_rect.height()) <= screen_geo.bottom():
                                 best_candidate = cand
                                 break
 
@@ -570,15 +644,14 @@ class SettingsWindow(QWidget):
     def mousePressEvent(self, event):
         """Начало перетаскивания окна."""
         if event.button() == Qt.LeftButton:
-            if self.content_widget:
-                self.start_pos = event.globalPos() - self.content_widget.mapToGlobal(QPoint(0, 0))
-            else:
-                self.start_pos = event.globalPos() - self.frameGeometry().topLeft()
+            # Corrected: store position relative to *this* widget
+            self.start_pos = event.pos()
             event.accept()
 
     def mouseMoveEvent(self, event):
         """Перетаскивание окна."""
         if event.buttons() == Qt.LeftButton and self.start_pos is not None:
+            # Corrected: move *this* window, not parent_window
             self.move(event.globalPos() - self.start_pos)
             event.accept()
 
@@ -587,106 +660,171 @@ class SettingsWindow(QWidget):
         self.start_pos = None
         event.accept()
 
-    def closeEvent(self, event):
-        """
-        Обработчик события закрытия окна настроек.
-        Сохраняет положение, если основное окно свернуто.
-        """
-        if self.parent() and (self.parent().isHidden() or self.parent().isMinimized()):
-            self.save_window_state()
-        super().closeEvent(event)
-
     def save_settings(self):
-        """Сохраняет измененные настройки в config.txt и применяет их."""
-        updated_config = self.current_config.copy()
+        """
+        Сохраняет текущие настройки из GUI-элементов в config.txt.
+        """
+        new_config_data = self.current_config.copy()  # Начинаем с текущей загруженной конфигурации
 
-        # Сохранение CAM_FPS
+        # Сохраняем старые параметры камеры для сравнения
+        old_cam_fps = int(new_config_data.get('CAM_FPS', self.DEFAULT_CONFIG['CAM_FPS']))
+        old_cam_width = int(new_config_data.get('CAM_WIDTH', self.DEFAULT_CONFIG['CAM_WIDTH']))
+        old_cam_height = int(new_config_data.get('CAM_HEIGHT', self.DEFAULT_CONFIG['CAM_HEIGHT']))
+        old_use_bg_resolution = new_config_data.get('USE_BG_RESOLUTION',
+                                                    self.DEFAULT_CONFIG['USE_BG_RESOLUTION']).lower() == 'true'
+
+        # Обновляем CAM_FPS
         try:
-            new_fps_str = self.cam_fps_input.text()
-            updated_config['CAM_FPS'] = new_fps_str
-        except KeyError:
-            pass
-
-        # Сохранение CAM_WIDTH, CAM_HEIGHT из QComboBox
-        selected_res = self.resolution_combo.currentText()
-        try:
-            width, height = map(int, selected_res.split('x'))
-            updated_config['CAM_WIDTH'] = str(width)
-            updated_config['CAM_HEIGHT'] = str(height)
-        except ValueError:
-            QMessageBox.warning(self, "Ошибка ввода", "Неверный формат разрешения. Используйте WxH.")
-            return
-        except KeyError:
-            pass
-
-        # Сохранение Boolean параметров
-        bool_params = [
-            'CROSS_FADE_ENABLED',
-            'BOUNCING_ENABLED',
-            'RESET_ANIMATION_ON_STATUS_CHANGE',
-            'INSTANT_TALK_TRANSITION',
-            'DIM_ENABLED'
-        ]
-        for param_key in bool_params:
-            try:
-                checkbox = self.config_widgets[param_key]
-                updated_config[param_key] = 'True' if checkbox.isChecked() else 'False'
-            except KeyError:
-                pass
-
-        # Сохранение DIM_PERCENTAGE (инвертированное значение)
-        try:
-            current_brightness = int(self.dim_percentage_input.text())
-            updated_config['DIM_PERCENTAGE'] = str(100 - current_brightness)  # Сохраняем как затемнение
-        except KeyError:
-            pass
-        except ValueError:
-            QMessageBox.warning(self, "Ошибка ввода",
-                                "Неверный формат для 'Яркость затемненного'. Используйте число от 0 до 100.")
+            new_cam_fps = int(self.cam_fps_input.text())
+            if new_cam_fps <= 0:
+                raise ValueError("FPS должен быть положительным числом.")
+            new_config_data['CAM_FPS'] = str(new_cam_fps)
+        except ValueError as e:
+            # Улучшена читаемость QMessageBox
+            msg_box = QMessageBox(self)
+            msg_box.setWindowTitle("Ошибка ввода")
+            msg_box.setText(f"Неверное значение для FPS: {e}")
+            msg_box.setIcon(QMessageBox.Warning)
+            msg_box.setStyleSheet(
+                "QMessageBox { background-color: #1a1a1a; color: #ffffff; } QLabel { color: #ffffff; } QPushButton { background-color: #007bff; color: #ffffff; border-radius: 5px; padding: 5px 10px; } QPushButton:hover { background-color: #0056b3; }")
+            msg_box.exec_()
             return
 
-        # Сохранение CROSS_FADE_DURATION_MS
-        try:
-            updated_config['CROSS_FADE_DURATION_MS'] = self.cross_fade_duration_input.text()
-        except KeyError:
-            pass
+        # Обновляем USE_BG_RESOLUTION
+        new_use_bg_resolution = self.use_bg_resolution_checkbox.isChecked()
+        new_config_data['USE_BG_RESOLUTION'] = str(new_use_bg_resolution)
 
-        try:
-            config_manager.save_config(updated_config)
-            self.save_message_label.setText("Сохранено!")
-            self.save_message_label.show()
-            QTimer.singleShot(2000, self.save_message_label.hide)
+        # Обновляем Разрешение Камеры в зависимости от USE_BG_RESOLUTION
+        new_cam_width = str(old_cam_width)  # Инициализируем текущими значениями
+        new_cam_height = str(old_cam_height)  # на случай, если фон не будет определен
 
-            # --- Apply changes and potentially restart camera ---
-            # Call update_camera_parameters to refresh global variables in virtual_camera.py
-            virtual_camera.update_camera_parameters()
-
-            # Now, check if a restart is needed based on the flag set by virtual_camera.update_camera_parameters()
-            if virtual_camera.get_camera_needs_restart_flag():
-                print("GUI: Параметры камеры изменились, перезапускаю поток камеры...")
-                # Stop existing camera thread
-                self.parent().stop_camera_thread()
-                # Reset the flag after processing
-                virtual_camera.reset_camera_needs_restart_flag()
-                # Re-initialize the virtual camera object (this will load new dimensions/fps)
-                virtual_camera.initialize_virtual_camera()
-                # Start a new camera thread
-                self.parent().start_camera_thread()
-                # Update GUI timer interval if FPS changed
-                self.parent().frame_timer.setInterval(
-                    1000 // (virtual_camera.CAM_FPS if virtual_camera.CAM_FPS > 0 else 30))
-                # Update the window size if resolution changed
-                self.parent().resize(self.parent().calculate_target_geometry())
+        if new_use_bg_resolution:
+            # Если выбрано разрешение фона, получаем его из virtual_camera
+            calculated_bg_w, calculated_bg_h = virtual_camera.get_calculated_bg_16_9_resolution()
+            if calculated_bg_w > 0 and calculated_bg_h > 0:
+                new_cam_width = str(calculated_bg_w)
+                new_cam_height = str(calculated_bg_h)
             else:
-                print("GUI: Параметры камеры не изменились. Перезапуск потока камеры не требуется.")
-                # If only animation parameters changed, ensure the timer is updated (it should be set by CAM_FPS)
-                self.parent().frame_timer.setInterval(
-                    1000 // (virtual_camera.CAM_FPS if virtual_camera.CAM_FPS > 0 else 30))
+                # *************** ИЗМЕНЕНИЕ: Убран QMessageBox, добавлено print ***************
+                print("ПРЕДУПРЕЖДЕНИЕ: Не удалось получить разрешение фона (BG.png отсутствует или некорректен). "
+                      "Камера будет использовать последние установленные размеры или стандартные. "
+                      "Пожалуйста, убедитесь, что 'BG.png' существует и корректен.")
+                # Продолжаем сохранение, используя old_cam_width/height в качестве fallback
+                # virtual_camera.initialize_virtual_camera() сам справится с этим
+        else:
+            # Если выбрано ручное разрешение, получаем его из QComboBox
+            selected_resolution = self.resolution_combo.currentText()
+            try:
+                new_cam_width_val, new_cam_height_val = map(int, selected_resolution.split('x'))
+                if new_cam_width_val <= 0 or new_cam_height_val <= 0:
+                    raise ValueError("Разрешение должно быть положительным числом.")
+                new_cam_width = str(new_cam_width_val)
+                new_cam_height = str(new_cam_height_val)
+            except ValueError:
+                # Улучшена читаемость QMessageBox
+                msg_box = QMessageBox(self)
+                msg_box.setWindowTitle("Ошибка ввода")
+                msg_box.setText("Неверный формат разрешения. Должен быть WIDTHxHEIGHT (например, 640x360).")
+                msg_box.setIcon(QMessageBox.Warning)
+                msg_box.setStyleSheet(
+                    "QMessageBox { background-color: #1a1a1a; color: #ffffff; } QLabel { color: #ffffff; } QPushButton { background-color: #007bff; color: #ffffff; border-radius: 5px; padding: 5px 10px; } QPushButton:hover { background-color: #0056b3; }")
+                msg_box.exec_()
+                return
 
-        except Exception as e:
-            QMessageBox.critical(self, "Ошибка сохранения", f"Не удалось сохранить настройки: {e}")
+        new_config_data['CAM_WIDTH'] = new_cam_width
+        new_config_data['CAM_HEIGHT'] = new_cam_height
+
+        # Обновляем Boolean параметры
+        bool_params_map = {
+            'CROSS_FADE_ENABLED': 'Включить плавный переход:',
+            'BOUNCING_ENABLED': 'Включить эффект "подпрыгивания":',
+            'RESET_ANIMATION_ON_STATUS_CHANGE': 'Сбрасывать анимацию при смене статуса:',
+            'INSTANT_TALK_TRANSITION': 'Мгновенный переход в статус "Говорит":',
+            'DIM_ENABLED': 'Включить затемнение при молчании:'
+        }
+        for param_key in bool_params_map:
+            checkbox = self.config_widgets[param_key]
+            new_config_data[param_key] = str(checkbox.isChecked())
+
+        # Обновляем DIM_PERCENTAGE
+        try:
+            brightness_value = int(self.dim_percentage_input.text())
+            if not (0 <= brightness_value <= 100):
+                raise ValueError("Яркость затемненного должна быть от 0 до 100.")
+            new_config_data['DIM_PERCENTAGE'] = str(100 - brightness_value)  # Сохраняем как процент затемнения
+        except ValueError as e:
+            # Улучшена читаемость QMessageBox
+            msg_box = QMessageBox(self)
+            msg_box.setWindowTitle("Ошибка ввода")
+            msg_box.setText(f"Неверное значение для яркости затемненного: {e}")
+            msg_box.setIcon(QMessageBox.Warning)
+            msg_box.setStyleSheet(
+                "QMessageBox { background-color: #1a1a1a; color: #ffffff; } QLabel { color: #ffffff; } QPushButton { background-color: #007bff; color: #ffffff; border-radius: 5px; padding: 5px 10px; } QPushButton:hover { background-color: #0056b3; }")
+            msg_box.exec_()
+            return
+
+        # Обновляем CROSS_FADE_DURATION_MS
+        try:
+            new_fade_duration = int(self.cross_fade_duration_input.text())
+            if new_fade_duration < 0:
+                raise ValueError("Длительность перехода не может быть отрицательной.")
+            new_config_data['CROSS_FADE_DURATION_MS'] = str(new_fade_duration)
+        except ValueError as e:
+            # Улучшена читаемость QMessageBox
+            msg_box = QMessageBox(self)
+            msg_box.setWindowTitle("Ошибка ввода")
+            msg_box.setText(f"Неверное значение для длительности перехода: {e}")
+            msg_box.setIcon(QMessageBox.Warning)
+            msg_box.setStyleSheet(
+                "QMessageBox { background-color: #1a1a1a; color: #ffffff; } QLabel { color: #ffffff; } QPushButton { background-color: #007bff; color: #ffffff; border-radius: 5px; padding: 5px 10px; } QPushButton:hover { background-color: #0056b3; }")
+            msg_box.exec_()
+            return
+
+        # Сохраняем конфигурацию
+        config_manager.save_config(new_config_data)
+        self.current_config = new_config_data  # Обновляем текущую конфигурацию в окне настроек
+
+        # Показываем сообщение об успехе
+        self.save_message_label.setText("Сохранено!")
+        self.save_message_label.show()
+        QTimer.singleShot(2000, self.save_message_label.hide)  # Скрываем через 2 секунды
+
+        # Проверяем, нужно ли перезапустить камеру
+        # Проверяем также изменение опции USE_BG_RESOLUTION, так как это может повлиять на разрешение
+        camera_params_changed = (
+                str(old_cam_fps) != new_config_data['CAM_FPS'] or
+                str(old_cam_width) != new_config_data['CAM_WIDTH'] or
+                str(old_cam_height) != new_config_data['CAM_HEIGHT'] or
+                old_use_bg_resolution != new_use_bg_resolution
+        )
+
+        if camera_params_changed:
+            print("Параметры камеры изменились. Перезапускаю виртуальную камеру...")
+            # Останавливаем поток камеры
+            if self.parent():  # Ensure parent exists
+                self.parent().stop_camera_thread()
+            # Переинициализируем virtual_camera с новыми параметрами из конфига
+            virtual_camera.initialize_virtual_camera()
+            # Запускаем новый поток камеры
+            if self.parent():  # Ensure parent exists
+                self.parent().start_camera_thread()
+                # Также обновляем интервал таймера в главном окне
+                self.parent().frame_timer.start(1000 // (virtual_camera.CAM_FPS if virtual_camera.CAM_FPS > 0 else 30))
+            print("Виртуальная камера перезапущена с новыми параметрами.")
+        else:
+            # Если параметры камеры не изменились, но другие настройки (например, анимация)
+            # изменились, нам нужно обновить внутреннее состояние virtual_camera.
+            # Это приведет к повторному применению настроек затемнения, подпрыгивания и т.д.
+            # Мы можем вызвать voice_status_callback с текущим статусом.
+            # Обновляем только параметры, без полной реинициализации камеры
+            virtual_camera.update_camera_parameters()
+            if self.parent():  # Ensure parent exists
+                current_status = self.parent().status  # Получаем текущий статус из основного окна
+                virtual_camera.voice_status_callback(current_status, "[GUI] Обновление настроек без перезапуска камеры")
+            print("Настройки обновлены. Камера не перезапускалась.")
 
 
+# Перемещено выше класса CameraWindow
 class CustomTitleBar(QWidget):
     """
     Кастомная полоса заголовка для окна.
@@ -806,6 +944,11 @@ class CustomTitleBar(QWidget):
         if self.settings_window is None:
             self.settings_window = SettingsWindow(self.parent_window)
 
+        # Обновляем данные в окне настроек перед показом
+        self.settings_window.current_config = config_manager.load_config()
+        self.settings_window.load_settings_into_gui(self.settings_window.current_config)
+        self.settings_window._update_bg_resolution_display()  # Обновляем метку разрешения BG
+
         if self.settings_window.isVisible():
             self.settings_window.hide()
         else:
@@ -855,6 +998,7 @@ class CustomTitleBar(QWidget):
         event.accept()
 
 
+# Перемещено выше класса CameraWindow
 class AnimatedMenu(QMenu):
     """
     Кастомное QMenu, которое появляется и исчезает с анимацией прозрачности.
@@ -941,6 +1085,11 @@ class CameraWindow(QWidget):
         else:
             print(f"ПРЕДУПРЕЖДЕНИЕ: Файл иконки '{ICON_PATH}' не найден. Окно будет без иконки.")
 
+        # ГЛАВНОЕ ИЗМЕНЕНИЕ: Инициализируем virtual_camera здесь, до того, как GUI начнет использовать ее параметры
+        print("\nИнициализация виртуальной камеры (предварительная загрузка всех аватаров и фонов)...")
+        virtual_camera.initialize_virtual_camera()
+        print("Виртуальная камера инициализирована, ресурсы загружены.")
+
         main_window_layout = QVBoxLayout(self)
         main_window_layout.setContentsMargins(0, 0, 0, 0)
         main_window_layout.setSpacing(0)
@@ -962,12 +1111,15 @@ class CameraWindow(QWidget):
 
         self.content_inner_widget = QWidget(self.main_container_widget)
         content_inner_layout = QVBoxLayout(self.content_inner_widget)
+        # Отступы для контента внутри окна. Это влияет на общий размер окна.
         content_inner_layout.setContentsMargins(10, 10, 10, 10)
         content_inner_layout.setSpacing(0)
 
         self.image_label = QLabel(self.main_container_widget)
         self.image_label.setAlignment(Qt.AlignCenter)
-        self.image_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        # Удалены QSizePolicy.Fixed и setFixedSize(), чтобы QLabel мог расширяться.
+        # Теперь QLabel будет занимать доступное пространство в QVBoxLayout.
+
         # Скругление углов для image_label
         self.image_label.setStyleSheet("background-color: black; border-radius: 12px;")
         content_inner_layout.addWidget(self.image_label)
@@ -975,6 +1127,12 @@ class CameraWindow(QWidget):
         main_container_layout.addWidget(self.content_inner_widget)
 
         main_window_layout.addWidget(self.main_container_widget)
+
+        # Устанавливаем минимальный размер окна на основе предустановленного размера
+        # Окно будет иметь фиксированный размер на основе GUI_PREVIEW_WIDTH и GUI_PREVIEW_HEIGHT
+        # Теперь CAM_WIDTH и CAM_HEIGHT из virtual_camera гарантированно инициализированы
+        initial_window_size = self.calculate_target_geometry(virtual_camera.CAM_WIDTH, virtual_camera.CAM_HEIGHT)
+        self.setFixedSize(initial_window_size)
 
         ANIMATION_DURATION = 200
 
@@ -1050,12 +1208,6 @@ class CameraWindow(QWidget):
 
         self.status = "Молчит"
 
-        min_height_fixed_elements = self.title_bar.height() + \
-                                    self.content_inner_widget.layout().contentsMargins().top() + \
-                                    self.content_inner_widget.layout().contentsMargins().bottom()
-
-        self.setMinimumSize(160, min_height_fixed_elements + 100)
-
         self._current_cv_frame = None
 
         self.status_handler = CustomStatusHandler(self._handle_status_update_on_gui_thread)
@@ -1118,28 +1270,32 @@ class CameraWindow(QWidget):
                 }
             """)
 
-    def calculate_target_geometry(self):
+    def calculate_target_geometry(self, content_width, content_height):
         """
-        Рассчитывает целевую геометрию окна на основе CAM_WIDTH/HEIGHT
-        и размеров фиксированных элементов GUI.
-        Возвращает QSize для целевого размера.
+        Рассчитывает целевую геометрию окна на основе заданных размеров контента (изображения).
+        Возвращает QSize для целевого размера окна.
         """
-        current_cam_width = virtual_camera.CAM_WIDTH if virtual_camera.CAM_WIDTH > 0 else 640
-        current_cam_height = virtual_camera.CAM_HEIGHT if virtual_camera.CAM_HEIGHT > 0 else 480
-
+        # Активируем лейауты, чтобы их размеры были актуальными
         self.layout().activate()
         self.main_container_widget.layout().activate()
         self.content_inner_widget.layout().activate()
 
-        target_height_fixed_elements = self.title_bar.height() + \
-                                       self.content_inner_widget.layout().contentsMargins().top() + \
-                                       self.content_inner_widget.layout().contentsMargins().bottom()
+        # Высота фиксированных элементов (заголовок + отступы контента)
+        fixed_height_for_margins = self.title_bar.height() + \
+                                   self.content_inner_widget.layout().contentsMargins().top() + \
+                                   self.content_inner_widget.layout().contentsMargins().bottom()
 
-        total_layout_spacing = self.main_container_widget.layout().spacing() * 2
+        # Ширина фиксированных элементов (отступы контента)
+        fixed_width_for_margins = self.content_inner_widget.layout().contentsMargins().left() + \
+                                  self.content_inner_widget.layout().contentsMargins().right()
 
-        target_total_height = current_cam_height + target_height_fixed_elements + total_layout_spacing
+        # Общая высота окна
+        total_height = content_height + fixed_height_for_margins
 
-        return QSize(current_cam_width, target_total_height)
+        # Общая ширина окна
+        total_width = content_width + fixed_width_for_margins
+
+        return QSize(total_width, total_height)
 
     def move_to_active_screen_center(self):
         """
@@ -1154,11 +1310,12 @@ class CameraWindow(QWidget):
         screen_center_x = screen_geo.center().x()
         screen_center_y = screen_geo.center().y()
 
-        target_size = self.calculate_target_geometry()
-        target_x = screen_center_x - (target_size.width() // 2)
-        target_y = screen_center_y - (target_size.height() // 2)
+        # Используем текущий размер окна, который уже установлен как фиксированный
+        current_size = self.size()
+        target_x = screen_center_x - (current_size.width() // 2)
+        target_y = screen_center_y - (current_size.height() // 2)
 
-        self.setGeometry(target_x, target_y, target_size.width(), target_size.height())
+        self.setGeometry(target_x, target_y, current_size.width(), current_size.height())
 
     def load_window_state(self):
         """Загружает сохраненное положение окна и состояние из QSettings."""
@@ -1200,40 +1357,21 @@ class CameraWindow(QWidget):
         super().showEvent(event)
         self._update_main_container_style()  # Обновляем стиль углов при показе
 
-        target_size = self.calculate_target_geometry()
-
-        current_pos = self.pos()
-        current_size = self.size()
-
-        start_width = int(target_size.width() * 0.9)
-        start_height = int(target_size.height() * 0.9)
-        start_size_for_animation = QSize(start_width, start_height)
-
-        start_x_for_animation = current_pos.x() + (current_size.width() - start_width) // 2
-        start_y_for_animation = current_pos.y() + (current_size.height() - start_height) // 2
-        start_pos_for_animation = QPoint(start_x_for_animation, start_y_for_animation)
-
-        self.size_animation.setStartValue(start_size_for_animation)
-        self.size_animation.setEndValue(target_size)
-
-        self.pos_animation.setStartValue(start_pos_for_animation)
-        self.pos_animation.setEndValue(current_pos)
-
-        self.size_animation.start()
         self.opacity_animation.start()
-        self.pos_animation.start()
 
     def resizeEvent(self, event):
         """
         Обработчик события изменения размера окна.
-        Перерисовывает текущий кадр, чтобы он масштабировался под новый размер окна.
+        Перерисовывает текущий кадр, чтобы он масштабировался под новый размер image_label.
         """
         if self._current_cv_frame is not None:
             h, w, ch = self._current_cv_frame.shape
             bytes_per_line = ch * w
 
-            qt_image = QImage(self._current_cv_frame.data, w, h, bytes_per_line, QImage.Format_RGB888).copy()
+            # Corrected: convert data to bytes explicitly
+            qt_image = QImage(self._current_cv_frame.tobytes(), w, h, bytes_per_line, QImage.Format_RGB888).copy()
 
+            # Масштабируем изображение под текущий размер image_label
             p = qt_image.scaled(self.image_label.width(), self.image_label.height(), Qt.KeepAspectRatio,
                                 Qt.SmoothTransformation)
             self.image_label.setPixmap(QPixmap.fromImage(p))
@@ -1302,12 +1440,13 @@ class CameraWindow(QWidget):
         if frame_rgb is None:
             return
 
-        # Перемещено внутрь блока if для исправления NameError
         h, w, ch = frame_rgb.shape
         bytes_per_line = ch * w
 
-        qt_image = QImage(frame_rgb.data, w, h, bytes_per_line, QImage.Format_RGB888).copy()
+        # Corrected: convert data to bytes explicitly
+        qt_image = QImage(frame_rgb.tobytes(), w, h, bytes_per_line, QImage.Format_RGB888).copy()
 
+        # Масштабируем изображение под текущий размер image_label
         p = qt_image.scaled(self.image_label.width(), self.image_label.height(), Qt.KeepAspectRatio,
                             Qt.SmoothTransformation)
         self.image_label.setPixmap(QPixmap.fromImage(p))
@@ -1339,6 +1478,21 @@ class CameraWindow(QWidget):
         используя фоновое изображение пользователя и аватар.
         Этот метод предназначен для установки *начального* кадра в окне.
         """
+        # Используем CAM_WIDTH и CAM_HEIGHT из virtual_camera, чтобы демонстрационная
+        # картинка имела такое же разрешение, как и вывод виртуальной камеры.
+
+        # Получаем текущие параметры камеры из virtual_camera
+        cam_w = virtual_camera.CAM_WIDTH
+        cam_h = virtual_camera.CAM_HEIGHT
+
+        # Если virtual_camera еще не инициализирована или имеет нулевые размеры,
+        # используем размеры по умолчанию для GUI
+        if cam_w == 0 or cam_h == 0:
+            cam_w = 640
+            cam_h = 360
+            print(
+                "ПРЕДУПРЕЖДЕНИЕ: Размеры CAM_WIDTH/CAM_HEIGHT в virtual_camera.py не определены при обновлении демонстрационного изображения. Использую 640x360.")
+
         preview_frame_rgb = virtual_camera.get_static_preview_frame(self.status)
 
         if preview_frame_rgb is not None:
@@ -1367,6 +1521,9 @@ def start_gui():
     app.setFont(QFont("Segoe UI", 10))
     app.setQuitOnLastWindowClosed(False)  # Отключаем автоматический выход при закрытии последнего видимого окна
 
+    # create_placeholder_images_for_gui() # Перемещено в CameraWindow.__init__
+    # virtual_camera.initialize_virtual_camera() # Перемещено в CameraWindow.__init__
+
     window = CameraWindow()
     window.show()
 
@@ -1382,10 +1539,5 @@ if __name__ == '__main__':
     logging_manager.setup_logging()
     sys.excepthook = logging_manager.handle_exception
 
-    create_placeholder_images_for_gui()
-    print(
-        "\nИнициализация виртуальной камеры (предварительная загрузка всех аватаров и фонов) при прямом запуске gui_elements.py...")
-    # Инициализация виртуальной камеры без запуска цикла здесь
-    virtual_camera.initialize_virtual_camera()
-    print("Виртуальная камера инициализирована, ресурсы загружены.")
+    create_placeholder_images_for_gui()  # Создаем заглушки до инициализации камеры
     start_gui()

@@ -114,9 +114,9 @@ class LoggerRedirector:
 
             # Если мы запускаемся не как exe и хотим видеть вывод в консоли во время разработки,
             # можно раскомментировать следующую строку:
-            # if not getattr(sys, 'frozen', False) and self.stdout:
-            #      self.stdout.write(message)
-            #      self.stdout.flush()
+            if not getattr(sys, 'frozen', False) and self.stdout:
+                 self.stdout.write(message)
+                 self.stdout.flush()
 
     def flush(self):
         """Метод flush требуется для совместимости со стандартными потоками."""
