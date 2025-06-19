@@ -141,7 +141,7 @@ async def run_playwright_and_monitor_async(playwright_api_instance: type[Playwri
                         channel='msedge',
                         headless=False
                     )
-                    page = await browser_page.new_page() # Исправлено: page = await browser_context.new_page()
+                    page = await browser_context.new_page() # Исправлено: page = await browser_context.new_page()
                     await page.goto(LOGIN_URL)
                     login_successful = await perform_login_flow(page)
                 else:
