@@ -18,7 +18,8 @@ from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QObject, QPoint, QPropertyAnima
 
 # Импортируем virtual_camera как модуль, чтобы получить доступ к display_queue и CAM_WIDTH/HEIGHT
 import virtual_camera
-import reactive_monitor  # Предполагается, что reactive_monitor существует и вызывает virtual_camera.voice_status_callback
+import \
+    reactive_monitor  # Предполагается, что reactive_monitor существует и вызывает virtual_camera.voice_status_callback
 import utils  # Предполагается, что utils существует
 import logging_manager  # Добавляем импорт logging_manager
 import config_manager  # Импортируем config_manager для доступа к настройкам
@@ -64,9 +65,13 @@ def create_placeholder_images_for_gui():
         placeholder_bg = np.full((360, 640, 3), 150, dtype=np.uint8)  # Серое 640x360
         save_np_array_as_png(placeholder_bg, bg_path)
 
+    # Исправляем KeyError: используем английские ключи, как определено в virtual_camera.STATUS_TO_FILENAME_MAP
+    # Убедитесь, что ваш STATUS_TO_FILENAME_MAP в virtual_camera.py содержит эти ключи:
+    # "Speaking", "Inactive", "Muted", "Deafened"
+
     # Создаем Speaking.png
     speaking_path = os.path.join(virtual_camera.AVATAR_ASSETS_FOLDER,
-                                 f"{virtual_camera.STATUS_TO_FILENAME_MAP['Говорит']}.png")
+                                 f"Speaking.png")
     if not os.path.exists(speaking_path):
         print(f"  Создаю заглушку '{os.path.basename(speaking_path)}'.")
         avatar_size = 200
@@ -80,7 +85,7 @@ def create_placeholder_images_for_gui():
 
     # Создаем Inactive.png
     inactive_path = os.path.join(virtual_camera.AVATAR_ASSETS_FOLDER,
-                                 f"{virtual_camera.STATUS_TO_FILENAME_MAP['Молчит']}.png")
+                                 f"Inactive.png")
     if not os.path.exists(inactive_path):
         print(f"  Создаю заглушку '{os.path.basename(inactive_path)}'.")
         if os.path.exists(speaking_path):
@@ -115,7 +120,7 @@ def create_placeholder_images_for_gui():
 
     # Создаем Muted.png (Микрофон выключен) - КРАСНЫЙ (BGR для OpenCV)
     muted_path = os.path.join(virtual_camera.AVATAR_ASSETS_FOLDER,
-                              f"{virtual_camera.STATUS_TO_FILENAME_MAP['Микрофон выключен (muted)']}.png")
+                              f"Muted.png")
     if not os.path.exists(muted_path):
         print(f"  Создаю заглушку '{os.path.basename(muted_path)}'.")
         placeholder_muted = np.zeros((200, 200, 4), dtype=np.uint8)
@@ -125,7 +130,7 @@ def create_placeholder_images_for_gui():
 
     # Создаем Deafened.png (Полностью заглушен) - СИНИЙ (BGR для OpenCV)
     deafened_path = os.path.join(virtual_camera.AVATAR_ASSETS_FOLDER,
-                                 f"{virtual_camera.STATUS_TO_FILENAME_MAP['Полностью заглушен (deafened)']}.png")
+                                 f"Deafened.png")
     if not os.path.exists(deafened_path):
         print(f"  Создаю заглушку '{os.path.basename(deafened_path)}'.")
         placeholder_deafened = np.zeros((200, 200, 4), dtype=np.uint8)
@@ -314,7 +319,8 @@ class SettingsWindow(QWidget):
         dim_percentage_layout.addWidget(self.dim_percentage_slider)
         dim_percentage_layout.addSpacing(10)
         dim_percentage_layout.addWidget(self.dim_percentage_input)
-        self.config_widgets['DIM_PERCENTAGE'] = {'slider': self.dim_percentage_slider, 'input': self.dim_percentage_input}
+        self.config_widgets['DIM_PERCENTAGE'] = {'slider': self.dim_percentage_slider,
+                                                 'input': self.dim_percentage_input}
         self.form_layout.addRow(dim_percentage_label, dim_percentage_layout)
 
         cross_fade_duration_label = QLabel("Длительность плавного перехода (мс):")
@@ -582,23 +588,24 @@ class SettingsWindow(QWidget):
         camera_params_changed = (str(old_cam_fps) != new_config_data['CAM_FPS'])
         if camera_params_changed:
             print("Параметры камеры (FPS) изменились. Перезапускаю виртуальную камеру...")
-            if self.parent():
-                self.parent().stop_camera_thread()
+            if self.parent():  # parent() here refers to CameraWindow instance
+                self.parent().stop_camera_thread()  # This needs to be called on CameraWindow
             virtual_camera.initialize_virtual_camera()
-            if self.parent():
-                self.parent().start_camera_thread()
+            if self.parent():  # parent() here refers to CameraWindow instance
+                self.parent().start_camera_thread()  # This needs to be called on CameraWindow
                 self.parent().frame_timer.start(1000 // (virtual_camera.CAM_FPS if virtual_camera.CAM_FPS > 0 else 30))
             print("Виртуальная камера перезапущена с новыми параметрами.")
         else:
             virtual_camera.update_camera_parameters()
-            if self.parent():
-                current_status = self.parent().status
+            if self.parent():  # parent() here refers to CameraWindow instance
+                current_status = self.parent().status  # This needs to be called on CameraWindow
                 virtual_camera.voice_status_callback(current_status, "[GUI] Обновление настроек без перезапуска камеры")
             print("Настройки обновлены. Камера не перезапускалась.")
 
 
 class CustomTitleBar(QWidget):
     """Кастомная полоса заголовка для окна."""
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.parent_window = parent
@@ -752,6 +759,7 @@ class CustomTitleBar(QWidget):
 
 class AnimatedMenu(QMenu):
     """Кастомное QMenu, которое появляется и исчезает с анимацией прозрачности."""
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
@@ -899,12 +907,18 @@ class CameraWindow(QWidget):
         """)
         self.tray_icon.show()
         self.update_image_signal.connect(self.update_image)
+
+        # --- Изменения для управления таймером предпросмотра при сворачивании ---
         self.frame_timer = QTimer(self)
         self.frame_timer.timeout.connect(self.check_for_new_frame)
+        # Запускаем таймер сразу, он будет остановлен, если окно свернуто.
         self.frame_timer.start(1000 // (virtual_camera.CAM_FPS if virtual_camera.CAM_FPS > 0 else 30))
-        self.status = "Молчит"
+        # --- Конец изменений для управления таймером предпросмотра ---
+
+        self.status = "Inactive"  # Убедимся, что начальный статус - "Inactive" (английский ключ)
         self._current_cv_frame = None
         self.status_handler = CustomStatusHandler(self._handle_status_update_on_gui_thread)
+        virtual_camera.set_status_callback(self.status_handler.on_status_change)  # Подключаем колбэк здесь
         self.settings = QSettings("ReactivePlus", "VirtualCameraReactive")
         self.load_window_state()
         self._update_main_container_style()
@@ -917,11 +931,13 @@ class CameraWindow(QWidget):
             print("GUI: Поток камеры уже запущен.")
             return
         print("GUI: Запуск нового потока камеры...")
+
         def run_virtual_camera_asyncio():
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             loop.run_until_complete(virtual_camera.start_frame_sending_loop())
             loop.close()
+
         self.camera_thread = threading.Thread(target=run_virtual_camera_asyncio)
         self.camera_thread.daemon = True
         self.camera_thread.start()
@@ -1086,6 +1102,9 @@ class CameraWindow(QWidget):
     def _handle_status_update_on_gui_thread(self, status_message: str, debug_message: str):
         """Внутренний метод для обработки обновления статуса в GUI-потоке."""
         self.status = status_message
+        # Если окно развернуто, обновим предпросмотр немедленно
+        if not self.isMinimized():
+            self._update_demo_image_with_status_circle()
 
     def check_for_new_frame(self):
         """Проверяет очередь на наличие новых кадров из виртуальной камеры."""
@@ -1110,6 +1129,23 @@ class CameraWindow(QWidget):
         else:
             print("ПРЕДУПРЕЖДЕНИЕ: virtual_camera.get_static_preview_frame() вернул None при инициализации.")
 
+    # --- Добавленный метод для обработки изменения состояния окна ---
+    def changeEvent(self, event):
+        """
+        Обрабатывает изменения состояния окна.
+        Мы будем останавливать обновление предпросмотра, когда окно свернуто.
+        """
+        if event.type() == Qt.Event.WindowStateChange:
+            if self.isMinimized():
+                print("[GUI] Окно свернуто. Остановка таймера предпросмотра.")
+                self.frame_timer.stop()  # Останавливаем таймер
+            else:  # Если окно развернуто (восстановлено из свернутого, максимизировано или в нормальном состоянии)
+                print("[GUI] Окно развернуто. Запуск таймера предпросмотра.")
+                # Запускаем таймер только если он не активен
+                if not self.frame_timer.isActive():
+                    self.frame_timer.start(1000 // (virtual_camera.CAM_FPS if virtual_camera.CAM_FPS > 0 else 30))
+        super().changeEvent(event)  # Важно вызвать родительский метод
+
 
 class CustomStatusHandler(QObject):
     status_display_signal = pyqtSignal(str, str)
@@ -1127,10 +1163,10 @@ def start_gui():
     app = QApplication(sys.argv)
     app.setFont(QFont("Segoe UI", 10))
     app.setQuitOnLastWindowClosed(False)
-    create_placeholder_images_for_gui()
+    # create_placeholder_images_for_gui() # Теперь вызывается в main_script, чтобы обеспечить инициализацию virtual_camera
     window = CameraWindow()
     window.show()
-    virtual_camera.set_status_callback(window.status_handler.on_status_change)
+    # virtual_camera.set_status_callback(window.status_handler.on_status_change) # Уже сделано в CameraWindow.__init__
     window.start_camera_thread()
     sys.exit(app.exec_())
 
@@ -1138,5 +1174,5 @@ def start_gui():
 if __name__ == '__main__':
     logging_manager.setup_logging()
     sys.excepthook = logging_manager.handle_exception
-    create_placeholder_images_for_gui()
+    create_placeholder_images_for_gui()  # Вызываем здесь, если запускаем gui_elements напрямую
     start_gui()
